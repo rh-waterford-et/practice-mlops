@@ -3,7 +3,7 @@ FROM registry.access.redhat.com/ubi9/python-311:latest
 USER 0
 
 RUN pip3 install --no-cache-dir \
-    mlflow[extras]==2.12.1 \
+    mlflow[extras]==3.10.0 \
     psycopg2-binary==2.9.9 \
     boto3==1.34.69
 

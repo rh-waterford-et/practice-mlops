@@ -57,25 +57,29 @@ spec:
             - "0.0.0.0"
             - --port
             - "5000"
+            - --allowed-hosts
+            - "*"
+            - --cors-allowed-origins
+            - "*"
           readinessProbe:
             httpGet:
               path: /health
               port: 5000
-            initialDelaySeconds: 20
+            initialDelaySeconds: 30
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /health
               port: 5000
-            initialDelaySeconds: 30
+            initialDelaySeconds: 60
             periodSeconds: 15
           resources:
             requests:
               cpu: 200m
-              memory: 512Mi
+              memory: 1Gi
             limits:
               cpu: "1"
-              memory: 1Gi
+              memory: 2Gi
 
 ---
 apiVersion: v1

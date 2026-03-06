@@ -6,7 +6,7 @@ Usage:
 
 Requires:
     - oc login (already authenticated)
-    - DSPA deployed in fkm-test namespace
+    - DSPA deployed in lineage namespace
 """
 
 import subprocess
@@ -16,7 +16,7 @@ import time
 from kfp import compiler
 from kfp.client import Client
 
-NAMESPACE = "fkm-test"
+NAMESPACE = "lineage"
 DSPA_NAME = "dspa"
 PIPELINE_YAML = "customer_churn_pipeline.yaml"
 PIPELINE_NAME = "Customer Churn ML Pipeline"
@@ -35,7 +35,7 @@ def get_dsp_route() -> str:
     )
     if result.returncode != 0 or not result.stdout.strip():
         print("Could not find DSP route. Trying internal service...")
-        return f"https://ds-pipeline-{DSPA_NAME}.{NAMESPACE}.svc.cluster.local:8443"
+        return f"https://ds-pipeline-{DSPA_NAME}.{NAMESPACE}.svc:8888"
     return f"https://{result.stdout.strip()}"
 
 
@@ -81,7 +81,7 @@ def main():
         pipeline = client.upload_pipeline(
             pipeline_package_path=PIPELINE_YAML,
             pipeline_name=PIPELINE_NAME,
-            description="End-to-end customer churn: Feast → Validate → Train → MLflow",
+            description="End-to-end customer churn: Feast, Validate, Train, MLflow",
         )
         print(f"Pipeline created: id={pipeline.pipeline_id}")
     except Exception as e:
@@ -107,7 +107,7 @@ def main():
         pipeline_file=PIPELINE_YAML,
         arguments={},
         run_name=f"churn-run-{int(time.time())}",
-        experiment_name="customer_churn",
+        experiment_name="customer_churn_lineage",
     )
     print(f"Run started: {run.run_id}")
     print(f"\nView in OpenShift AI dashboard → Data Science Pipelines → Runs")

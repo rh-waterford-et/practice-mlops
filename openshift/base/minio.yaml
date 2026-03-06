@@ -1,21 +1,36 @@
 ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlflow-minio-pvc
+  namespace: lineage
+  labels:
+    app: mlflow-minio
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: minio
-  namespace: fkm-test
+  name: mlflow-minio
+  namespace: lineage
   labels:
-    app: minio
+    app: mlflow-minio
     app.kubernetes.io/part-of: feast-kfp-mlflow
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: minio
+      app: mlflow-minio
   template:
     metadata:
       labels:
-        app: minio
+        app: mlflow-minio
     spec:
       containers:
         - name: minio
@@ -26,11 +41,19 @@ spec:
               name: api
             - containerPort: 9001
               name: console
-          envFrom:
-            - secretRef:
-                name: fkm-credentials
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-minio-secret
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-minio-secret
+                  key: MINIO_ROOT_PASSWORD
           volumeMounts:
-            - name: data
+            - name: minio-data
               mountPath: /data
           readinessProbe:
             httpGet:
@@ -43,30 +66,31 @@ spec:
               path: /minio/health/live
               port: 9000
             initialDelaySeconds: 10
-            periodSeconds: 20
+            periodSeconds: 10
           resources:
             requests:
-              cpu: 200m
+              cpu: 100m
               memory: 256Mi
             limits:
-              cpu: "1"
+              cpu: 500m
               memory: 1Gi
       volumes:
-        - name: data
+        - name: minio-data
           persistentVolumeClaim:
-            claimName: minio-data
+            claimName: mlflow-minio-pvc
 
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: minio
-  namespace: fkm-test
+  name: mlflow-minio
+  namespace: lineage
   labels:
-    app: minio
+    app: mlflow-minio
+    app.kubernetes.io/part-of: feast-kfp-mlflow
 spec:
   selector:
-    app: minio
+    app: mlflow-minio
   ports:
     - name: api
       port: 9000

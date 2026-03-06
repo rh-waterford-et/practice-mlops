@@ -84,9 +84,12 @@ def train_and_log(
         "MLFLOW_S3_ENDPOINT_URL", "http://localhost:9000"
     )
     os.environ["AWS_ACCESS_KEY_ID"] = os.getenv("AWS_ACCESS_KEY_ID", "minioadmin")
-    os.environ["AWS_SECRET_ACCESS_KEY"] = os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
+    os.environ["AWS_SECRET_ACCESS_KEY"] = os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin123")
 
     mlflow.set_tracking_uri(tracking_uri)
+    artifact_root = os.getenv("MLFLOW_S3_ARTIFACT_ROOT", "s3://mlflow/artifacts")
+    if mlflow.get_experiment_by_name(experiment_name) is None:
+        mlflow.create_experiment(experiment_name, artifact_location=artifact_root)
     mlflow.set_experiment(experiment_name)
 
     default_params = {
@@ -103,6 +106,11 @@ def train_and_log(
     X_train, X_test, y_train, y_test, encoders = prepare_data(df)
 
     with mlflow.start_run() as run:
+        train_dataset = mlflow.data.from_pandas(
+            df, name="customer_features_view",
+        )
+        mlflow.log_input(train_dataset, context="training")
+
         mlflow.log_params(default_params)
 
         model = xgb.XGBClassifier(**default_params)
@@ -125,8 +133,6 @@ def train_and_log(
         mlflow.log_metrics(metrics)
         logger.info("Metrics: %s", metrics)
 
-        # Log the model artifact (use sklearn flavor – XGBClassifier is
-        # sklearn-compatible, and this avoids xgboost save_model quirks)
         model_info = mlflow.sklearn.log_model(
             model, artifact_path="model", registered_model_name=None,
         )

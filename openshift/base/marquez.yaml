@@ -1,0 +1,318 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: marquez-db-pvc
+  namespace: lineage
+  labels:
+    app: marquez-db
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: marquez-db-secret
+  namespace: lineage
+  labels:
+    app: marquez-db
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+type: Opaque
+stringData:
+  POSTGRESQL_USER: "marquez"
+  POSTGRESQL_PASSWORD: "marquez123"
+  POSTGRESQL_DATABASE: "marquez"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: marquez
+  namespace: lineage
+  labels:
+    app.kubernetes.io/component: marquez
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+type: Opaque
+stringData:
+  marquez-db-password: "marquez123"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: marquez-config
+  namespace: lineage
+  labels:
+    app.kubernetes.io/component: marquez
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+data:
+  config.yml: |
+    server:
+      applicationConnectors:
+      - type: http
+        port: ${MARQUEZ_PORT}
+        httpCompliance: RFC7230_LEGACY
+      adminConnectors:
+      - type: http
+        port: ${MARQUEZ_ADMIN_PORT}
+
+    db:
+      driverClass: org.postgresql.Driver
+      url: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      user: ${POSTGRES_USER}
+      password: ${POSTGRES_PASSWORD}
+
+    dbRetention:
+      frequencyMins: 15
+      numberOfRowsPerBatch: 1000
+      retentionDays: 7
+
+    migrateOnStartup: ${MIGRATE_ON_STARTUP}
+
+    logging:
+      level: ${LOG_LEVEL}
+      appenders:
+        - type: console
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marquez-db
+  namespace: lineage
+  labels:
+    app: marquez-db
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: marquez-db
+  template:
+    metadata:
+      labels:
+        app: marquez-db
+    spec:
+      containers:
+        - name: postgresql
+          image: registry.redhat.io/rhel9/postgresql-15:latest
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRESQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: marquez-db-secret
+                  key: POSTGRESQL_USER
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: marquez-db-secret
+                  key: POSTGRESQL_PASSWORD
+            - name: POSTGRESQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: marquez-db-secret
+                  key: POSTGRESQL_DATABASE
+          volumeMounts:
+            - name: db-data
+              mountPath: /var/lib/pgsql/data
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "pg_isready -U marquez -d marquez"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "pg_isready -U marquez -d marquez"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: db-data
+          persistentVolumeClaim:
+            claimName: marquez-db-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marquez-db
+  namespace: lineage
+  labels:
+    app: marquez-db
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  selector:
+    app: marquez-db
+  ports:
+    - port: 5432
+      targetPort: 5432
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marquez
+  namespace: lineage
+  labels:
+    app.kubernetes.io/component: marquez
+    app.kubernetes.io/name: marquez
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: marquez
+      app.kubernetes.io/name: marquez
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: marquez
+        app.kubernetes.io/name: marquez
+    spec:
+      containers:
+        - name: marquez
+          image: docker.io/marquezproject/marquez:0.51.1
+          ports:
+            - containerPort: 5000
+              name: http
+            - containerPort: 5001
+              name: http-admin
+          env:
+            - name: MARQUEZ_PORT
+              value: "5000"
+            - name: MARQUEZ_ADMIN_PORT
+              value: "5001"
+            - name: MARQUEZ_CONFIG
+              value: /usr/src/app/config.yml
+            - name: POSTGRES_HOST
+              value: marquez-db
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: marquez
+            - name: POSTGRES_USER
+              value: marquez
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: marquez
+                  key: marquez-db-password
+            - name: MIGRATE_ON_STARTUP
+              value: "true"
+            - name: LOG_LEVEL
+              value: INFO
+          volumeMounts:
+            - name: marquez-volume
+              mountPath: /usr/src/app/config.yml
+              subPath: config.yml
+          readinessProbe:
+            httpGet:
+              path: /healthcheck
+              port: http-admin
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthcheck
+              port: http-admin
+            periodSeconds: 10
+      volumes:
+        - name: marquez-volume
+          configMap:
+            name: marquez-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marquez
+  namespace: lineage
+  labels:
+    app.kubernetes.io/component: marquez
+    app.kubernetes.io/name: marquez
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  selector:
+    app.kubernetes.io/component: marquez
+    app.kubernetes.io/name: marquez
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marquez-web
+  namespace: lineage
+  labels:
+    app.kubernetes.io/component: web
+    app.kubernetes.io/name: marquez
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: web
+      app.kubernetes.io/name: marquez
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: web
+        app.kubernetes.io/name: marquez
+    spec:
+      containers:
+        - name: marquez-web
+          image: docker.io/marquezproject/marquez-web:0.51.1
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: MARQUEZ_HOST
+              value: marquez
+            - name: MARQUEZ_PORT
+              value: "80"
+            - name: WEB_PORT
+              value: "3000"
+          readinessProbe:
+            httpGet:
+              path: /healthcheck
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthcheck
+              port: http
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marquez-web
+  namespace: lineage
+  labels:
+    app.kubernetes.io/component: web
+    app.kubernetes.io/name: marquez
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  selector:
+    app.kubernetes.io/component: web
+    app.kubernetes.io/name: marquez
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

@@ -13,7 +13,7 @@
 # ═══════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
-NAMESPACE="fkm-test"
+NAMESPACE="lineage"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 STAGE="${1:-all}"
@@ -31,10 +31,10 @@ err()    { echo -e "${RED}[ERROR]${NC} $1"; }
 create_pipeline_bucket() {
     info "Ensuring 'pipeline-artifacts' bucket exists in MinIO ..."
     oc run minio-bucket-init --rm -i --restart=Never \
-        --image=image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest \
+        --image=image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest \
         -n "$NAMESPACE" -- python3 -c "
 from minio import Minio
-client = Minio('minio:9000', access_key='minioadmin', secret_key='minioadmin', secure=False)
+client = Minio('mlflow-minio:9000', access_key='minioadmin', secret_key='minioadmin123', secure=False)
 if not client.bucket_exists('pipeline-artifacts'):
     client.make_bucket('pipeline-artifacts')
     print('Created bucket: pipeline-artifacts')
@@ -71,6 +71,17 @@ deploy_dspa() {
 
     DSP_ROUTE=$(oc get route "ds-pipeline-dspa" -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "<pending>")
     info "DSP API: https://$DSP_ROUTE"
+
+    info "Deploying KFP UI + network policies ..."
+    oc apply -f "$SCRIPT_DIR/dsp/network-policy-patch.yaml"
+    oc apply -f "$SCRIPT_DIR/dsp/kfp-ui.yaml"
+
+    info "Waiting for KFP UI pod ..."
+    oc wait pod -l app=kfp-ui -n "$NAMESPACE" \
+        --for=condition=Ready --timeout=120s 2>/dev/null || true
+
+    KFP_ROUTE=$(oc get route kfp-ui -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "<pending>")
+    info "KFP UI: https://$KFP_ROUTE"
 }
 
 # ── Compile + Upload pipeline ───────────────────────────────────────
@@ -142,7 +153,7 @@ run = client.create_run_from_pipeline_package(
     pipeline_file=yaml_file,
     arguments={},
     run_name=f'churn-run-{int(time.time())}',
-    experiment_name='customer_churn',
+    experiment_name='customer_churn_lineage',
 )
 print(f'Run started: {run.run_id}')
 "

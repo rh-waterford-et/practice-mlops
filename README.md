@@ -65,7 +65,7 @@ For a detailed description of the architecture and operation, see **[docs/ARCHIT
 │   ├── status.sh                # Namespace status check
 │   ├── test-api.sh              # Smoke-test via Route
 │   ├── base/
-│   │   ├── namespace.yaml       # fkm-test namespace
+│   │   ├── namespace.yaml       # lineage namespace
 │   │   ├── secret.yaml          # Credentials
 │   │   ├── configmap.yaml       # Service endpoints
 │   │   ├── feast-config.yaml    # Feast feature_store.yaml (cluster)
@@ -259,7 +259,7 @@ curl -X POST http://localhost:8000/reload-model
 
 ---
 
-## OpenShift Deployment (namespace: fkm-test)
+## OpenShift Deployment (namespace: lineage)
 
 ### Prerequisites
 
@@ -276,7 +276,7 @@ curl -X POST http://localhost:8000/reload-model
 
 This script performs the following in order:
 
-1. Creates the `fkm-test` namespace, Secrets, ConfigMaps, PVCs
+1. Creates the `lineage` namespace, Secrets, ConfigMaps, PVCs
 2. Creates ImageStreams + BuildConfigs, then builds the `fkm-app` and `mlflow-server` images via `oc start-build --from-dir`
 3. Deploys MinIO, PostgreSQL, Redis, MLflow (waits for readiness)
 4. Runs 6 sequential Jobs:
@@ -301,8 +301,8 @@ This script performs the following in order:
 
 ```bash
 ./openshift/status.sh           # Pods, services, routes, jobs, events
-oc get pods -n fkm-test         # Quick pod check
-oc logs job/ml-pipeline -n fkm-test   # View pipeline logs
+oc get pods -n lineage         # Quick pod check
+oc logs job/ml-pipeline -n lineage   # View pipeline logs
 ```
 
 ### Test the API
@@ -311,7 +311,7 @@ oc logs job/ml-pipeline -n fkm-test   # View pipeline logs
 ./openshift/test-api.sh
 
 # Or manually:
-HOST=$(oc get route inference-api -n fkm-test -o jsonpath='{.spec.host}')
+HOST=$(oc get route inference-api -n lineage -o jsonpath='{.spec.host}')
 curl -sk -X POST "https://$HOST/predict" \
   -H "Content-Type: application/json" \
   -d '{"entity_ids": [1, 2, 3]}'
@@ -328,7 +328,7 @@ curl -sk -X POST "https://$HOST/predict" \
 ### Re-run a Job
 
 ```bash
-oc delete job etl-job -n fkm-test
+oc delete job etl-job -n lineage
 oc apply -f openshift/jobs/02-etl.yaml
 ```
 
@@ -339,7 +339,7 @@ oc apply -f openshift/jobs/02-etl.yaml
 ./openshift/deploy.sh teardown
 
 # Or manually:
-oc delete namespace fkm-test
+oc delete namespace lineage
 ```
 
 ---

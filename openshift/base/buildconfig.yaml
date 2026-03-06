@@ -4,7 +4,7 @@ apiVersion: image.openshift.io/v1
 kind: ImageStream
 metadata:
   name: fkm-app
-  namespace: fkm-test
+  namespace: lineage
   labels:
     app.kubernetes.io/part-of: feast-kfp-mlflow
 
@@ -14,7 +14,7 @@ apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
   name: fkm-app
-  namespace: fkm-test
+  namespace: lineage
   labels:
     app.kubernetes.io/part-of: feast-kfp-mlflow
 spec:
@@ -28,34 +28,3 @@ spec:
     to:
       kind: ImageStreamTag
       name: fkm-app:latest
-
----
-# ImageStream for the MLflow server
-apiVersion: image.openshift.io/v1
-kind: ImageStream
-metadata:
-  name: mlflow-server
-  namespace: fkm-test
-  labels:
-    app.kubernetes.io/part-of: feast-kfp-mlflow
-
----
-# BuildConfig – builds from Dockerfile.mlflow
-apiVersion: build.openshift.io/v1
-kind: BuildConfig
-metadata:
-  name: mlflow-server
-  namespace: fkm-test
-  labels:
-    app.kubernetes.io/part-of: feast-kfp-mlflow
-spec:
-  source:
-    type: Binary
-  strategy:
-    type: Docker
-    dockerStrategy:
-      dockerfilePath: Dockerfile.mlflow
-  output:
-    to:
-      kind: ImageStreamTag
-      name: mlflow-server:latest

@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: promote-model
-  namespace: fkm-test
+  namespace: lineage
   labels:
     app.kubernetes.io/part-of: feast-kfp-mlflow
     stage: "06-promote"
@@ -17,7 +17,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: promote
-          image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
+          image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
           command:
             - python3
             - -c
@@ -25,7 +25,7 @@ spec:
               import os, mlflow
               from mlflow.tracking import MlflowClient
 
-              tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+              tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow-server:5000")
               model_name = os.getenv("MODEL_NAME", "customer_churn_model")
 
               mlflow.set_tracking_uri(tracking_uri)

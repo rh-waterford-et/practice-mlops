@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: feast-apply
-  namespace: fkm-test
+  namespace: lineage
   labels:
     app.kubernetes.io/part-of: feast-kfp-mlflow
     stage: "03-feast-apply"
@@ -27,7 +27,7 @@ spec:
               echo "PostgreSQL is up"
       containers:
         - name: feast-apply
-          image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
+          image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
           command:
             - sh
             - -c

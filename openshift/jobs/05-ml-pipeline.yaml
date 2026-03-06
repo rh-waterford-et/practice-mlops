@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: ml-pipeline
-  namespace: fkm-test
+  namespace: lineage
   labels:
     app.kubernetes.io/part-of: feast-kfp-mlflow
     stage: "05-ml-pipeline"
@@ -22,12 +22,12 @@ spec:
             - bash
             - -c
             - |
-              echo "Waiting for mlflow:5000 ..."
-              until bash -c "echo > /dev/tcp/mlflow/5000" 2>/dev/null; do sleep 2; done
+              echo "Waiting for mlflow-server:5000 ..."
+              until bash -c "echo > /dev/tcp/mlflow-server/5000" 2>/dev/null; do sleep 2; done
               echo "MLflow is up"
       containers:
         - name: pipeline
-          image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
+          image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
           command: ["python3", "-m", "src.pipeline.run_pipeline"]
           envFrom:
             - configMapRef:

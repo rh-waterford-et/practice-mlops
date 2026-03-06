@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kfp-ui
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kfp-ui
+  template:
+    metadata:
+      labels:
+        app: kfp-ui
+    spec:
+      volumes:
+        - name: service-ca
+          configMap:
+            name: openshift-service-ca.crt
+      containers:
+        - name: ui
+          image: ghcr.io/kubeflow/kfp-frontend:2.16.0
+          ports:
+            - containerPort: 3000
+          volumeMounts:
+            - name: service-ca
+              mountPath: /etc/ssl/certs/service-ca.crt
+              subPath: service-ca.crt
+          env:
+            - name: ML_PIPELINE_SERVICE_HOST
+              value: ds-pipeline-dspa.lineage.svc
+            - name: ML_PIPELINE_SERVICE_PORT
+              value: "8888"
+            - name: ML_PIPELINE_SERVICE_SCHEME
+              value: "https"
+            - name: METADATA_ENVOY_SERVICE_SERVICE_HOST
+              value: ds-pipeline-md-dspa.lineage.svc
+            - name: METADATA_ENVOY_SERVICE_SERVICE_PORT
+              value: "9090"
+            - name: NODE_EXTRA_CA_CERTS
+              value: /etc/ssl/certs/service-ca.crt
+            - name: DISABLE_GKE_METADATA
+              value: "true"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kfp-ui
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  selector:
+    app: kfp-ui
+  ports:
+    - port: 3000
+      targetPort: 3000
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: kfp-ui
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  to:
+    kind: Service
+    name: kfp-ui
+  port:
+    targetPort: 3000

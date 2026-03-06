@@ -1,25 +1,57 @@
 # PIPELINE DEFINITION
 # Name: customer-churn-ml-pipeline
-# Description: End-to-end: Feast extraction, Validation, Feature engineering, XGBoost training, Evaluation, MLflow registration
+# Description: End-to-end: Feast apply, Materialize, Extraction, Validation, Feature engineering, XGBoost training, Evaluation, MLflow registration
 # Inputs:
 #    aws_key: str [Default: 'minioadmin']
-#    aws_secret: str [Default: 'minioadmin']
-#    experiment_name: str [Default: 'customer_churn']
+#    aws_secret: str [Default: 'minioadmin123']
+#    experiment_name: str [Default: 'customer_churn_lineage']
 #    feast_repo_path: str [Default: '/app/src/feature_store']
 #    model_name: str [Default: 'customer_churn_model']
-#    pg_host: str [Default: 'postgres.fkm-test.svc.cluster.local']
-#    pg_url: str [Default: 'postgresql://feast:feast@postgres.fkm-test.svc.cluster.local:5432/warehouse']
-#    redis_host: str [Default: 'redis.fkm-test.svc.cluster.local']
+#    pg_host: str [Default: 'postgres']
+#    pg_url: str [Default: 'postgresql://feast:feast@postgres:5432/warehouse']
+#    redis_host: str [Default: 'redis']
 #    roc_auc_threshold: float [Default: 0.7]
-#    s3_endpoint: str [Default: 'http://minio.fkm-test.svc.cluster.local:9000']
+#    s3_endpoint: str [Default: 'http://mlflow-minio:9000']
 #    table_name: str [Default: 'customer_features']
-#    tracking_uri: str [Default: 'http://mlflow.fkm-test.svc.cluster.local:5000']
+#    tracking_uri: str [Default: 'openlineage+http://mlflow-server:5000']
 components:
+  comp-step0a-feast-apply:
+    executorLabel: exec-step0a-feast-apply
+    inputDefinitions:
+      parameters:
+        feast_repo_path:
+          parameterType: STRING
+        pg_host:
+          parameterType: STRING
+        redis_host:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-step0b-feast-materialize:
+    executorLabel: exec-step0b-feast-materialize
+    inputDefinitions:
+      parameters:
+        apply_done:
+          parameterType: STRING
+        feast_repo_path:
+          parameterType: STRING
+        pg_host:
+          parameterType: STRING
+        redis_host:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
   comp-step1-data-extraction:
     executorLabel: exec-step1-data-extraction
     inputDefinitions:
       parameters:
         feast_repo_path:
+          parameterType: STRING
+        materialize_done:
           parameterType: STRING
         pg_host:
           parameterType: STRING
@@ -122,6 +154,99 @@ components:
           parameterType: STRING
 deploymentSpec:
   executors:
+    exec-step0a-feast-apply:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - step0a_feast_apply
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef step0a_feast_apply(\n    feast_repo_path: str,\n    pg_host:\
+          \ str,\n    redis_host: str,\n) -> str:\n    \"\"\"Run feast apply to register\
+          \ feature definitions. Emits OpenLineage events.\"\"\"\n    import os\n\
+          \    import subprocess\n\n    fs_yaml = os.path.join(feast_repo_path, \"\
+          feature_store.yaml\")\n    with open(fs_yaml, \"w\") as f:\n        f.write(f\"\
+          \"\"\\\nproject: customer_churn\nprovider: local\nregistry:\n  registry_type:\
+          \ sql\n  path: postgresql://feast:feast@{pg_host}:5432/warehouse\n  cache_ttl_seconds:\
+          \ 60\noffline_store:\n  type: postgres\n  host: {pg_host}\n  port: 5432\n\
+          \  database: warehouse\n  db_schema: public\n  user: feast\n  password:\
+          \ feast\nonline_store:\n  type: redis\n  connection_string: {redis_host}:6379\n\
+          entity_key_serialization_version: 2\nopenlineage:\n  enabled: true\n  transport_type:\
+          \ http\n  transport_url: http://marquez\n  namespace: churn-demo\n  emit_on_apply:\
+          \ true\n  emit_on_materialize: true\n\"\"\")\n    print(f\"Patched {fs_yaml}\"\
+          )\n\n    env = os.environ.copy()\n    env[\"REDIS_PORT\"] = \"6379\"\n \
+          \   result = subprocess.run(\n        [\"feast\", \"apply\"],\n        cwd=feast_repo_path,\n\
+          \        capture_output=True, text=True,\n        env=env,\n    )\n    print(result.stdout)\n\
+          \    if result.returncode != 0:\n        print(f\"STDERR: {result.stderr}\"\
+          )\n        raise RuntimeError(f\"feast apply failed: {result.stderr[:500]}\"\
+          )\n    print(\"Step 0a complete - feast apply succeeded\")\n    return \"\
+          applied\"\n\n"
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-step0b-feast-materialize:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - step0b_feast_materialize
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef step0b_feast_materialize(\n    feast_repo_path: str,\n    pg_host:\
+          \ str,\n    redis_host: str,\n    apply_done: str,\n) -> str:\n    \"\"\"\
+          Materialize features from offline to online store. Emits OpenLineage events.\"\
+          \"\"\n    import os\n    from datetime import datetime, timedelta\n    from\
+          \ feast import FeatureStore\n\n    fs_yaml = os.path.join(feast_repo_path,\
+          \ \"feature_store.yaml\")\n    with open(fs_yaml, \"w\") as f:\n       \
+          \ f.write(f\"\"\"\\\nproject: customer_churn\nprovider: local\nregistry:\n\
+          \  registry_type: sql\n  path: postgresql://feast:feast@{pg_host}:5432/warehouse\n\
+          \  cache_ttl_seconds: 60\noffline_store:\n  type: postgres\n  host: {pg_host}\n\
+          \  port: 5432\n  database: warehouse\n  db_schema: public\n  user: feast\n\
+          \  password: feast\nonline_store:\n  type: redis\n  connection_string: {redis_host}:6379\n\
+          entity_key_serialization_version: 2\nopenlineage:\n  enabled: true\n  transport_type:\
+          \ http\n  transport_url: http://marquez\n  namespace: churn-demo\n  emit_on_apply:\
+          \ true\n  emit_on_materialize: true\n\"\"\")\n\n    store = FeatureStore(repo_path=feast_repo_path)\n\
+          \    end = datetime.utcnow()\n    start = end - timedelta(days=1000)\n \
+          \   print(f\"Materializing features {start.isoformat()} -> {end.isoformat()}\"\
+          )\n    store.materialize(start_date=start, end_date=end)\n    print(\"Step\
+          \ 0b complete - feast materialize succeeded\")\n    return \"materialized\"\
+          \n\n"
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
     exec-step1-data-extraction:
       container:
         args:
@@ -150,18 +275,19 @@ deploymentSpec:
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef step1_data_extraction(\n    pg_url: str,\n    feast_repo_path:\
           \ str,\n    table_name: str,\n    pg_host: str,\n    redis_host: str,\n\
-          \    output_path: dsl.Output[dsl.Dataset],\n) -> None:\n    \"\"\"Retrieve\
-          \ historical features from Feast and save as parquet.\"\"\"\n    import\
-          \ os\n    import pandas as pd\n    from sqlalchemy import create_engine,\
-          \ text\n    from feast import FeatureStore\n\n    # Patch feature_store.yaml\
-          \ so Feast points at in-cluster services\n    fs_yaml = os.path.join(feast_repo_path,\
-          \ \"feature_store.yaml\")\n    with open(fs_yaml, \"w\") as f:\n       \
-          \ f.write(f\"\"\"\\\nproject: customer_churn\nprovider: local\nregistry:\n\
-          \  registry_type: sql\n  path: postgresql://feast:feast@{pg_host}:5432/warehouse\n\
+          \    materialize_done: str,\n    output_path: dsl.Output[dsl.Dataset],\n\
+          ) -> None:\n    \"\"\"Retrieve historical features from Feast and save as\
+          \ parquet.\"\"\"\n    import os\n    import pandas as pd\n    from sqlalchemy\
+          \ import create_engine, text\n    from feast import FeatureStore\n\n   \
+          \ fs_yaml = os.path.join(feast_repo_path, \"feature_store.yaml\")\n    with\
+          \ open(fs_yaml, \"w\") as f:\n        f.write(f\"\"\"\\\nproject: customer_churn\n\
+          provider: local\nregistry:\n  registry_type: sql\n  path: postgresql://feast:feast@{pg_host}:5432/warehouse\n\
           \  cache_ttl_seconds: 60\noffline_store:\n  type: postgres\n  host: {pg_host}\n\
           \  port: 5432\n  database: warehouse\n  db_schema: public\n  user: feast\n\
           \  password: feast\nonline_store:\n  type: redis\n  connection_string: {redis_host}:6379\n\
-          entity_key_serialization_version: 2\n\"\"\")\n    print(f\"Patched {fs_yaml}\
+          entity_key_serialization_version: 2\nopenlineage:\n  enabled: true\n  transport_type:\
+          \ http\n  transport_url: http://marquez\n  namespace: churn-demo\n  emit_on_apply:\
+          \ true\n  emit_on_materialize: true\n\"\"\")\n    print(f\"Patched {fs_yaml}\
           \ -> pg={pg_host}, redis={redis_host}\")\n\n    engine = create_engine(pg_url)\n\
           \    with engine.connect() as conn:\n        entity_df = pd.read_sql(\n\
           \            text(f\"SELECT entity_id, event_timestamp, churn FROM {table_name}\"\
@@ -180,7 +306,7 @@ deploymentSpec:
           , \"event_timestamp\", \"churn\"]],\n        on=[\"entity_id\", \"event_timestamp\"\
           ],\n        how=\"left\",\n    )\n    print(f\"Step 1 complete - shape {result.shape}\"\
           )\n    result.to_parquet(output_path.path)\n\n"
-        image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
     exec-step2-data-validation:
       container:
         args:
@@ -220,7 +346,7 @@ deploymentSpec:
           \        if df[col].nunique() <= 1:\n            print(f\"  WARNING: {col}\
           \ is constant\")\n\n    print(f\"Step 2 complete \u2013 {len(df)} rows validated\"\
           )\n    df.to_parquet(output_path.path)\n\n"
-        image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
     exec-step3-feature-engineering:
       container:
         args:
@@ -256,7 +382,7 @@ deploymentSpec:
           \n    for col in [\"charges_per_month\", \"ticket_rate\"]:\n        df[col]\
           \ = df[col].replace([np.inf, -np.inf], 0.0)\n\n    print(f\"Step 3 complete\
           \ \u2013 shape {df.shape}\")\n    df.to_parquet(output_path.path)\n\n"
-        image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
     exec-step4-model-training:
       container:
         args:
@@ -294,32 +420,40 @@ deploymentSpec:
           \ import train_test_split\n    from sklearn.preprocessing import LabelEncoder\n\
           \n    os.environ[\"MLFLOW_S3_ENDPOINT_URL\"] = s3_endpoint\n    os.environ[\"\
           AWS_ACCESS_KEY_ID\"] = aws_key\n    os.environ[\"AWS_SECRET_ACCESS_KEY\"\
-          ] = aws_secret\n\n    df = pd.read_parquet(dataset.path)\n\n    cat_cols\
-          \ = [\"contract_type\", \"internet_service\", \"payment_method\"]\n    for\
-          \ col in cat_cols:\n        df[col] = LabelEncoder().fit_transform(df[col].astype(str))\n\
-          \n    feature_cols = [\n        \"tenure_months\", \"monthly_charges\",\
-          \ \"total_charges\",\n        \"num_support_tickets\", \"contract_type\"\
-          , \"internet_service\",\n        \"payment_method\",\n    ]\n    X = df[feature_cols].values.astype(np.float32)\n\
+          ] = aws_secret\n    os.environ[\"OPENLINEAGE_URL\"] = \"http://marquez\"\
+          \n    os.environ[\"OPENLINEAGE_NAMESPACE\"] = \"churn-demo/customer_churn\"\
+          \n\n    df = pd.read_parquet(dataset.path)\n\n    cat_cols = [\"contract_type\"\
+          , \"internet_service\", \"payment_method\"]\n    for col in cat_cols:\n\
+          \        df[col] = LabelEncoder().fit_transform(df[col].astype(str))\n\n\
+          \    feature_cols = [\n        \"tenure_months\", \"monthly_charges\", \"\
+          total_charges\",\n        \"num_support_tickets\", \"contract_type\", \"\
+          internet_service\",\n        \"payment_method\",\n    ]\n    X = df[feature_cols].values.astype(np.float32)\n\
           \    y = df[\"churn\"].values.astype(np.int32)\n\n    X_train, X_test, y_train,\
           \ y_test = train_test_split(\n        X, y, test_size=0.2, random_state=42,\
           \ stratify=y,\n    )\n\n    params = {\n        \"max_depth\": 6,\n    \
           \    \"learning_rate\": 0.1,\n        \"n_estimators\": 200,\n        \"\
           objective\": \"binary:logistic\",\n        \"eval_metric\": \"logloss\"\
           ,\n        \"seed\": 42,\n    }\n\n    mlflow.set_tracking_uri(tracking_uri)\n\
+          \    artifact_root = os.getenv(\"MLFLOW_S3_ARTIFACT_ROOT\", \"s3://mlflow/artifacts\"\
+          )\n    if mlflow.get_experiment_by_name(experiment_name) is None:\n    \
+          \    mlflow.create_experiment(experiment_name, artifact_location=artifact_root)\n\
           \    mlflow.set_experiment(experiment_name)\n\n    with mlflow.start_run()\
-          \ as run:\n        mlflow.log_params(params)\n\n        model = xgb.XGBClassifier(**params)\n\
-          \        model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)\n\
-          \n        y_pred = model.predict(X_test)\n        y_prob = model.predict_proba(X_test)[:,\
-          \ 1]\n\n        metrics = {\n            \"roc_auc\": float(roc_auc_score(y_test,\
-          \ y_prob)),\n            \"f1\": float(f1_score(y_test, y_pred)),\n    \
-          \        \"precision\": float(precision_score(y_test, y_pred)),\n      \
-          \      \"recall\": float(recall_score(y_test, y_pred)),\n        }\n   \
-          \     mlflow.log_metrics(metrics)\n\n        info = mlflow.sklearn.log_model(model,\
-          \ artifact_path=\"model\")\n\n        print(f\"Step 4 complete \u2013 metrics:\
-          \ {metrics}\")\n        return json.dumps({\n            \"run_id\": run.info.run_id,\n\
-          \            \"model_uri\": info.model_uri,\n            \"metrics\": metrics,\n\
-          \        })\n\n"
-        image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
+          \ as run:\n        train_dataset = mlflow.data.from_pandas(\n          \
+          \  df, name=\"customer_features_view\",\n        )\n        mlflow.log_input(train_dataset,\
+          \ context=\"training\")\n\n        mlflow.log_params(params)\n\n       \
+          \ model = xgb.XGBClassifier(**params)\n        model.fit(X_train, y_train,\
+          \ eval_set=[(X_test, y_test)], verbose=False)\n\n        y_pred = model.predict(X_test)\n\
+          \        y_prob = model.predict_proba(X_test)[:, 1]\n\n        metrics =\
+          \ {\n            \"roc_auc\": float(roc_auc_score(y_test, y_prob)),\n  \
+          \          \"f1\": float(f1_score(y_test, y_pred)),\n            \"precision\"\
+          : float(precision_score(y_test, y_pred)),\n            \"recall\": float(recall_score(y_test,\
+          \ y_pred)),\n        }\n        mlflow.log_metrics(metrics)\n\n        info\
+          \ = mlflow.sklearn.log_model(model, artifact_path=\"model\")\n\n       \
+          \ print(f\"Step 4 complete \u2013 metrics: {metrics}\")\n        return\
+          \ json.dumps({\n            \"run_id\": run.info.run_id,\n            \"\
+          model_uri\": info.model_uri,\n            \"metrics\": metrics,\n      \
+          \  })\n\n"
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
     exec-step5-evaluation:
       container:
         args:
@@ -352,7 +486,7 @@ deploymentSpec:
           \        f\"Step 5  ROC-AUC={m['roc_auc']:.4f}  F1={m['f1']:.4f}  \"\n \
           \       f\"Precision={m['precision']:.4f}  Recall={m['recall']:.4f}\"\n\
           \    )\n    return json.dumps(m)\n\n"
-        image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
     exec-step6-model-registration:
       container:
         args:
@@ -386,34 +520,82 @@ deploymentSpec:
           \"\"\n    import json\n    import os\n\n    import mlflow\n    from mlflow.tracking\
           \ import MlflowClient\n\n    os.environ[\"MLFLOW_S3_ENDPOINT_URL\"] = s3_endpoint\n\
           \    os.environ[\"AWS_ACCESS_KEY_ID\"] = aws_key\n    os.environ[\"AWS_SECRET_ACCESS_KEY\"\
-          ] = aws_secret\n\n    result = json.loads(train_result_json)\n    metrics\
-          \ = json.loads(metrics_json)\n\n    if metrics[\"roc_auc\"] < roc_auc_threshold:\n\
-          \        print(f\"Step 6  ROC-AUC {metrics['roc_auc']:.4f} < {roc_auc_threshold}\
-          \ \u2013 skipping\")\n        return json.dumps({\"registered\": False,\
-          \ \"reason\": \"below_threshold\"})\n\n    mlflow.set_tracking_uri(tracking_uri)\n\
-          \    mv = mlflow.register_model(model_uri=result[\"model_uri\"], name=model_name)\n\
-          \    client = MlflowClient()\n    client.set_registered_model_alias(model_name,\
-          \ \"champion\", str(mv.version))\n\n    print(f\"Step 6  Registered {model_name}\
-          \ v{mv.version} as alias 'champion'\")\n    return json.dumps({\n      \
-          \  \"registered\": True,\n        \"model_name\": model_name,\n        \"\
-          version\": int(mv.version),\n        \"alias\": \"champion\",\n    })\n\n"
-        image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
+          ] = aws_secret\n\n    # The model registry doesn't have an openlineage+\
+          \ scheme plugin,\n    # so point it at the plain MLflow server URL directly.\n\
+          \    plain_uri = tracking_uri.replace(\"openlineage+\", \"\")\n    os.environ[\"\
+          MLFLOW_REGISTRY_URI\"] = plain_uri\n\n    result = json.loads(train_result_json)\n\
+          \    metrics = json.loads(metrics_json)\n\n    if metrics[\"roc_auc\"] <\
+          \ roc_auc_threshold:\n        print(f\"Step 6  ROC-AUC {metrics['roc_auc']:.4f}\
+          \ < {roc_auc_threshold} \u2013 skipping\")\n        return json.dumps({\"\
+          registered\": False, \"reason\": \"below_threshold\"})\n\n    mlflow.set_tracking_uri(tracking_uri)\n\
+          \    try:\n        mv = mlflow.register_model(model_uri=result[\"model_uri\"\
+          ], name=model_name)\n        client = MlflowClient()\n        client.set_registered_model_alias(model_name,\
+          \ \"champion\", str(mv.version))\n        print(f\"Step 6  Registered {model_name}\
+          \ v{mv.version} as alias 'champion'\")\n        return json.dumps({\n  \
+          \          \"registered\": True,\n            \"model_name\": model_name,\n\
+          \            \"version\": int(mv.version),\n            \"alias\": \"champion\"\
+          ,\n        })\n    except Exception as e:\n        print(f\"Step 6  Model\
+          \ registration failed (non-fatal): {e}\")\n        return json.dumps({\"\
+          registered\": False, \"reason\": str(e)[:200]})\n\n"
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
 pipelineInfo:
-  description: 'End-to-end: Feast extraction, Validation, Feature engineering, XGBoost
-    training, Evaluation, MLflow registration'
+  description: 'End-to-end: Feast apply, Materialize, Extraction, Validation, Feature
+    engineering, XGBoost training, Evaluation, MLflow registration'
   name: customer-churn-ml-pipeline
 root:
   dag:
     tasks:
+      step0a-feast-apply:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-step0a-feast-apply
+        inputs:
+          parameters:
+            feast_repo_path:
+              componentInputParameter: feast_repo_path
+            pg_host:
+              componentInputParameter: pg_host
+            redis_host:
+              componentInputParameter: redis_host
+        taskInfo:
+          name: step0a-feast-apply
+      step0b-feast-materialize:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-step0b-feast-materialize
+        dependentTasks:
+        - step0a-feast-apply
+        inputs:
+          parameters:
+            apply_done:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: step0a-feast-apply
+            feast_repo_path:
+              componentInputParameter: feast_repo_path
+            pg_host:
+              componentInputParameter: pg_host
+            redis_host:
+              componentInputParameter: redis_host
+        taskInfo:
+          name: step0b-feast-materialize
       step1-data-extraction:
         cachingOptions:
           enableCache: true
         componentRef:
           name: comp-step1-data-extraction
+        dependentTasks:
+        - step0b-feast-materialize
         inputs:
           parameters:
             feast_repo_path:
               componentInputParameter: feast_repo_path
+            materialize_done:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: step0b-feast-materialize
             pg_host:
               componentInputParameter: pg_host
             pg_url:
@@ -534,11 +716,11 @@ root:
         isOptional: true
         parameterType: STRING
       aws_secret:
-        defaultValue: minioadmin
+        defaultValue: minioadmin123
         isOptional: true
         parameterType: STRING
       experiment_name:
-        defaultValue: customer_churn
+        defaultValue: customer_churn_lineage
         isOptional: true
         parameterType: STRING
       feast_repo_path:
@@ -550,15 +732,15 @@ root:
         isOptional: true
         parameterType: STRING
       pg_host:
-        defaultValue: postgres.fkm-test.svc.cluster.local
+        defaultValue: postgres
         isOptional: true
         parameterType: STRING
       pg_url:
-        defaultValue: postgresql://feast:feast@postgres.fkm-test.svc.cluster.local:5432/warehouse
+        defaultValue: postgresql://feast:feast@postgres:5432/warehouse
         isOptional: true
         parameterType: STRING
       redis_host:
-        defaultValue: redis.fkm-test.svc.cluster.local
+        defaultValue: redis
         isOptional: true
         parameterType: STRING
       roc_auc_threshold:
@@ -566,7 +748,7 @@ root:
         isOptional: true
         parameterType: NUMBER_DOUBLE
       s3_endpoint:
-        defaultValue: http://minio.fkm-test.svc.cluster.local:9000
+        defaultValue: http://mlflow-minio:9000
         isOptional: true
         parameterType: STRING
       table_name:
@@ -574,7 +756,7 @@ root:
         isOptional: true
         parameterType: STRING
       tracking_uri:
-        defaultValue: http://mlflow.fkm-test.svc.cluster.local:5000
+        defaultValue: openlineage+http://mlflow-server:5000
         isOptional: true
         parameterType: STRING
 schemaVersion: 2.1.0

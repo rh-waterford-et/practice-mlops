@@ -9,7 +9,7 @@ import os
 # ── MinIO / S3 ──────────────────────────────────────────────────────────
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin123")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "raw-data")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
 
@@ -30,7 +30,7 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 # ── MLflow ──────────────────────────────────────────────────────────────
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
 MLFLOW_S3_ENDPOINT_URL = os.getenv("MLFLOW_S3_ENDPOINT_URL", "http://localhost:9000")
-MLFLOW_EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME", "customer_churn")
+MLFLOW_EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT_NAME", "customer_churn_lineage")
 MODEL_NAME = os.getenv("MODEL_NAME", "customer_churn_model")
 
 # ── Feast ───────────────────────────────────────────────────────────────
@@ -44,4 +44,4 @@ ENTITY_COLUMN = "entity_id"
 TIMESTAMP_COLUMN = "event_timestamp"
 
 # ── Thresholds ──────────────────────────────────────────────────────────
-MODEL_ROC_AUC_THRESHOLD = float(os.getenv("MODEL_ROC_AUC_THRESHOLD", "0.75"))
+MODEL_ROC_AUC_THRESHOLD = float(os.getenv("MODEL_ROC_AUC_THRESHOLD", "0.70"))

@@ -16,29 +16,61 @@ from kfp import dsl, compiler
 # The fkm-app image built via OpenShift BuildConfig contains all deps.
 # Override at pipeline-creation time via the `image` parameter.
 FKM_IMAGE = (
-    "image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest"
+    "image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest"
 )
 
 
+FEAST_STORE_YAML = """\
+project: customer_churn
+provider: local
+registry:
+  registry_type: sql
+  path: postgresql://feast:feast@{pg_host}:5432/warehouse
+  cache_ttl_seconds: 60
+offline_store:
+  type: postgres
+  host: {pg_host}
+  port: 5432
+  database: warehouse
+  db_schema: public
+  user: feast
+  password: feast
+online_store:
+  type: redis
+  connection_string: {redis_host}:6379
+entity_key_serialization_version: 2
+openlineage:
+  enabled: true
+  transport_type: http
+  transport_url: http://marquez
+  namespace: churn-demo
+  emit_on_apply: true
+  emit_on_materialize: true
+"""
+
+
+def _patch_feast_yaml(feast_repo_path: str, pg_host: str, redis_host: str) -> None:
+    """Write feature_store.yaml pointing at in-cluster services."""
+    import os
+    fs_yaml = os.path.join(feast_repo_path, "feature_store.yaml")
+    with open(fs_yaml, "w") as f:
+        f.write(FEAST_STORE_YAML.format(pg_host=pg_host, redis_host=redis_host))
+    print(f"Patched {fs_yaml} -> pg={pg_host}, redis={redis_host}")
+
+
 # ═══════════════════════════════════════════════════════════════════════
-# STEP 1 — Data Extraction via Feast
+# STEP 0a — Feast Apply (registers entities/views, emits OpenLineage)
 # ═══════════════════════════════════════════════════════════════════════
 @dsl.component(base_image=FKM_IMAGE)
-def step1_data_extraction(
-    pg_url: str,
+def step0a_feast_apply(
     feast_repo_path: str,
-    table_name: str,
     pg_host: str,
     redis_host: str,
-    output_path: dsl.Output[dsl.Dataset],
-) -> None:
-    """Retrieve historical features from Feast and save as parquet."""
+) -> str:
+    """Run feast apply to register feature definitions. Emits OpenLineage events."""
     import os
-    import pandas as pd
-    from sqlalchemy import create_engine, text
-    from feast import FeatureStore
+    import subprocess
 
-    # Patch feature_store.yaml so Feast points at in-cluster services
     fs_yaml = os.path.join(feast_repo_path, "feature_store.yaml")
     with open(fs_yaml, "w") as f:
         f.write(f"""\
@@ -60,6 +92,133 @@ online_store:
   type: redis
   connection_string: {redis_host}:6379
 entity_key_serialization_version: 2
+openlineage:
+  enabled: true
+  transport_type: http
+  transport_url: http://marquez
+  namespace: churn-demo
+  emit_on_apply: true
+  emit_on_materialize: true
+""")
+    print(f"Patched {fs_yaml}")
+
+    env = os.environ.copy()
+    env["REDIS_PORT"] = "6379"
+    result = subprocess.run(
+        ["feast", "apply"],
+        cwd=feast_repo_path,
+        capture_output=True, text=True,
+        env=env,
+    )
+    print(result.stdout)
+    if result.returncode != 0:
+        print(f"STDERR: {result.stderr}")
+        raise RuntimeError(f"feast apply failed: {result.stderr[:500]}")
+    print("Step 0a complete - feast apply succeeded")
+    return "applied"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# STEP 0b — Feast Materialize (offline -> online store, emits OpenLineage)
+# ═══════════════════════════════════════════════════════════════════════
+@dsl.component(base_image=FKM_IMAGE)
+def step0b_feast_materialize(
+    feast_repo_path: str,
+    pg_host: str,
+    redis_host: str,
+    apply_done: str,
+) -> str:
+    """Materialize features from offline to online store. Emits OpenLineage events."""
+    import os
+    from datetime import datetime, timedelta
+    from feast import FeatureStore
+
+    fs_yaml = os.path.join(feast_repo_path, "feature_store.yaml")
+    with open(fs_yaml, "w") as f:
+        f.write(f"""\
+project: customer_churn
+provider: local
+registry:
+  registry_type: sql
+  path: postgresql://feast:feast@{pg_host}:5432/warehouse
+  cache_ttl_seconds: 60
+offline_store:
+  type: postgres
+  host: {pg_host}
+  port: 5432
+  database: warehouse
+  db_schema: public
+  user: feast
+  password: feast
+online_store:
+  type: redis
+  connection_string: {redis_host}:6379
+entity_key_serialization_version: 2
+openlineage:
+  enabled: true
+  transport_type: http
+  transport_url: http://marquez
+  namespace: churn-demo
+  emit_on_apply: true
+  emit_on_materialize: true
+""")
+
+    store = FeatureStore(repo_path=feast_repo_path)
+    end = datetime.utcnow()
+    start = end - timedelta(days=1000)
+    print(f"Materializing features {start.isoformat()} -> {end.isoformat()}")
+    store.materialize(start_date=start, end_date=end)
+    print("Step 0b complete - feast materialize succeeded")
+    return "materialized"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# STEP 1 — Data Extraction via Feast
+# ═══════════════════════════════════════════════════════════════════════
+@dsl.component(base_image=FKM_IMAGE)
+def step1_data_extraction(
+    pg_url: str,
+    feast_repo_path: str,
+    table_name: str,
+    pg_host: str,
+    redis_host: str,
+    materialize_done: str,
+    output_path: dsl.Output[dsl.Dataset],
+) -> None:
+    """Retrieve historical features from Feast and save as parquet."""
+    import os
+    import pandas as pd
+    from sqlalchemy import create_engine, text
+    from feast import FeatureStore
+
+    fs_yaml = os.path.join(feast_repo_path, "feature_store.yaml")
+    with open(fs_yaml, "w") as f:
+        f.write(f"""\
+project: customer_churn
+provider: local
+registry:
+  registry_type: sql
+  path: postgresql://feast:feast@{pg_host}:5432/warehouse
+  cache_ttl_seconds: 60
+offline_store:
+  type: postgres
+  host: {pg_host}
+  port: 5432
+  database: warehouse
+  db_schema: public
+  user: feast
+  password: feast
+online_store:
+  type: redis
+  connection_string: {redis_host}:6379
+entity_key_serialization_version: 2
+openlineage:
+  enabled: true
+  transport_type: http
+  transport_url: http://marquez
+  namespace: churn-demo
+  emit_on_apply: true
+  emit_on_materialize: true
 """)
     print(f"Patched {fs_yaml} -> pg={pg_host}, redis={redis_host}")
 
@@ -190,6 +349,8 @@ def step4_model_training(
     os.environ["MLFLOW_S3_ENDPOINT_URL"] = s3_endpoint
     os.environ["AWS_ACCESS_KEY_ID"] = aws_key
     os.environ["AWS_SECRET_ACCESS_KEY"] = aws_secret
+    os.environ["OPENLINEAGE_URL"] = "http://marquez"
+    os.environ["OPENLINEAGE_NAMESPACE"] = "churn-demo/customer_churn"
 
     df = pd.read_parquet(dataset.path)
 
@@ -219,9 +380,17 @@ def step4_model_training(
     }
 
     mlflow.set_tracking_uri(tracking_uri)
+    artifact_root = os.getenv("MLFLOW_S3_ARTIFACT_ROOT", "s3://mlflow/artifacts")
+    if mlflow.get_experiment_by_name(experiment_name) is None:
+        mlflow.create_experiment(experiment_name, artifact_location=artifact_root)
     mlflow.set_experiment(experiment_name)
 
     with mlflow.start_run() as run:
+        train_dataset = mlflow.data.from_pandas(
+            df, name="customer_features_view",
+        )
+        mlflow.log_input(train_dataset, context="training")
+
         mlflow.log_params(params)
 
         model = xgb.XGBClassifier(**params)
@@ -290,6 +459,11 @@ def step6_model_registration(
     os.environ["AWS_ACCESS_KEY_ID"] = aws_key
     os.environ["AWS_SECRET_ACCESS_KEY"] = aws_secret
 
+    # The model registry doesn't have an openlineage+ scheme plugin,
+    # so point it at the plain MLflow server URL directly.
+    plain_uri = tracking_uri.replace("openlineage+", "")
+    os.environ["MLFLOW_REGISTRY_URI"] = plain_uri
+
     result = json.loads(train_result_json)
     metrics = json.loads(metrics_json)
 
@@ -298,17 +472,20 @@ def step6_model_registration(
         return json.dumps({"registered": False, "reason": "below_threshold"})
 
     mlflow.set_tracking_uri(tracking_uri)
-    mv = mlflow.register_model(model_uri=result["model_uri"], name=model_name)
-    client = MlflowClient()
-    client.set_registered_model_alias(model_name, "champion", str(mv.version))
-
-    print(f"Step 6  Registered {model_name} v{mv.version} as alias 'champion'")
-    return json.dumps({
-        "registered": True,
-        "model_name": model_name,
-        "version": int(mv.version),
-        "alias": "champion",
-    })
+    try:
+        mv = mlflow.register_model(model_uri=result["model_uri"], name=model_name)
+        client = MlflowClient()
+        client.set_registered_model_alias(model_name, "champion", str(mv.version))
+        print(f"Step 6  Registered {model_name} v{mv.version} as alias 'champion'")
+        return json.dumps({
+            "registered": True,
+            "model_name": model_name,
+            "version": int(mv.version),
+            "alias": "champion",
+        })
+    except Exception as e:
+        print(f"Step 6  Model registration failed (non-fatal): {e}")
+        return json.dumps({"registered": False, "reason": str(e)[:200]})
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -317,31 +494,47 @@ def step6_model_registration(
 @dsl.pipeline(
     name="Customer Churn ML Pipeline",
     description=(
-        "End-to-end: Feast extraction, Validation, Feature engineering, "
-        "XGBoost training, Evaluation, MLflow registration"
+        "End-to-end: Feast apply, Materialize, Extraction, Validation, "
+        "Feature engineering, XGBoost training, Evaluation, MLflow registration"
     ),
 )
 def customer_churn_pipeline(
-    pg_url: str = "postgresql://feast:feast@postgres.fkm-test.svc.cluster.local:5432/warehouse",
+    pg_url: str = "postgresql://feast:feast@postgres:5432/warehouse",
     feast_repo_path: str = "/app/src/feature_store",
     table_name: str = "customer_features",
-    pg_host: str = "postgres.fkm-test.svc.cluster.local",
-    redis_host: str = "redis.fkm-test.svc.cluster.local",
-    tracking_uri: str = "http://mlflow.fkm-test.svc.cluster.local:5000",
-    experiment_name: str = "customer_churn",
+    pg_host: str = "postgres",
+    redis_host: str = "redis",
+    tracking_uri: str = "openlineage+http://mlflow-server:5000",
+    experiment_name: str = "customer_churn_lineage",
     model_name: str = "customer_churn_model",
-    s3_endpoint: str = "http://minio.fkm-test.svc.cluster.local:9000",
+    s3_endpoint: str = "http://mlflow-minio:9000",
     aws_key: str = "minioadmin",
-    aws_secret: str = "minioadmin",
+    aws_secret: str = "minioadmin123",
     roc_auc_threshold: float = 0.70,
 ):
-    # STEP 1 - Extract features from Feast
+    # STEP 0a – Register feature definitions (emits OpenLineage)
+    apply_task = step0a_feast_apply(
+        feast_repo_path=feast_repo_path,
+        pg_host=pg_host,
+        redis_host=redis_host,
+    )
+
+    # STEP 0b – Materialize features offline->online (emits OpenLineage)
+    materialize_task = step0b_feast_materialize(
+        feast_repo_path=feast_repo_path,
+        pg_host=pg_host,
+        redis_host=redis_host,
+        apply_done=apply_task.output,
+    )
+
+    # STEP 1 – Extract historical features from Feast
     extract_task = step1_data_extraction(
         pg_url=pg_url,
         feast_repo_path=feast_repo_path,
         table_name=table_name,
         pg_host=pg_host,
         redis_host=redis_host,
+        materialize_done=materialize_task.output,
     )
 
     # STEP 2 – Validate data

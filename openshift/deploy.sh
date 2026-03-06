@@ -11,7 +11,7 @@
 # ═══════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
-NAMESPACE="fkm-test"
+NAMESPACE="lineage"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 STAGE="${1:-all}"
@@ -36,6 +36,17 @@ wait_for_pod() {
         return 1
     fi
     info "Pod $label is Ready"
+}
+
+wait_for_pod_selector() {
+    local selector=$1 timeout=${2:-120}
+    info "Waiting for pod with selector $selector to be Ready (timeout ${timeout}s) ..."
+    if ! oc wait pod -l "$selector" -n "$NAMESPACE" \
+        --for=condition=Ready --timeout="${timeout}s" 2>/dev/null; then
+        warn "Pod ($selector) not ready within ${timeout}s – check: oc get pods -n $NAMESPACE"
+        return 1
+    fi
+    info "Pod ($selector) is Ready"
 }
 
 wait_for_job() {
@@ -72,54 +83,65 @@ fi
 # 1. CREATE NAMESPACE + BASE RESOURCES
 # ═══════════════════════════════════════════════════════════════════════
 deploy_infra() {
-    banner "1/5 — Namespace & Config"
+    banner "1/6 — Namespace & Config"
 
-    # Create namespace (idempotent)
     oc apply -f "$SCRIPT_DIR/base/namespace.yaml"
     oc project "$NAMESPACE"
 
-    # Secrets, ConfigMaps, Feast config
+    # Shared secrets and configmaps
     oc apply -f "$SCRIPT_DIR/base/secret.yaml"
     oc apply -f "$SCRIPT_DIR/base/configmap.yaml"
     oc apply -f "$SCRIPT_DIR/base/feast-config.yaml"
 
-    # PVCs
+    # Feast postgres PVC
     oc apply -f "$SCRIPT_DIR/base/pvc.yaml"
 
-    banner "2/5 — Build Images"
+    banner "2/6 — Build Images"
 
-    # ImageStreams + BuildConfigs
     oc apply -f "$SCRIPT_DIR/base/buildconfig.yaml"
 
-    # Build the unified app image (fail fast if build breaks)
     info "Building fkm-app image (this may take a few minutes) ..."
     if ! oc start-build fkm-app --from-dir="$PROJECT_ROOT" -n "$NAMESPACE" --follow; then
         err "fkm-app build FAILED – aborting"; exit 1
     fi
 
-    # Build the MLflow server image
-    info "Building mlflow-server image ..."
-    if ! oc start-build mlflow-server --from-dir="$PROJECT_ROOT" -n "$NAMESPACE" --follow; then
-        err "mlflow-server build FAILED – aborting"; exit 1
-    fi
+    banner "3/6 — Deploy Databases & Storage"
 
-    banner "3/5 — Deploy Infrastructure Services"
-
-    # Deploy services in dependency order
+    # MinIO (shared S3 storage) — includes PVC, Deployment, Service
     oc apply -f "$SCRIPT_DIR/base/minio.yaml"
+
+    # Feast PostgreSQL (offline store / warehouse)
     oc apply -f "$SCRIPT_DIR/base/postgres.yaml"
+
+    # Redis (Feast online store)
     oc apply -f "$SCRIPT_DIR/base/redis.yaml"
 
-    info "Waiting for infrastructure pods ..."
-    wait_for_pod "minio" 120
+    # Marquez DB — includes PVC, Secret, Deployment, Service
+    oc apply -f "$SCRIPT_DIR/base/marquez.yaml"
+
+    # MLflow DB — includes PVC, Secret, Deployment, Service
+    oc apply -f "$SCRIPT_DIR/base/mlflow-db.yaml"
+
+    info "Waiting for storage and database pods ..."
+    wait_for_pod "mlflow-minio" 120
     wait_for_pod "postgres" 120
     wait_for_pod "redis" 60
+    wait_for_pod "mlflow-db" 120
+    wait_for_pod "marquez-db" 120
 
-    # MLflow depends on postgres + minio
+    banner "4/6 — Deploy Marquez"
+
+    wait_for_pod_selector "app.kubernetes.io/component=marquez,app.kubernetes.io/name=marquez" 180
+    wait_for_pod_selector "app.kubernetes.io/component=web,app.kubernetes.io/name=marquez" 120
+
+    banner "5/6 — Deploy MLflow"
+
+    # MLflow server — includes ConfigMap, Secret, Deployment, Service
     oc apply -f "$SCRIPT_DIR/base/mlflow.yaml"
-    wait_for_pod "mlflow" 180
+    wait_for_pod "mlflow-server" 240
 
-    # Routes
+    banner "6/6 — Routes"
+
     oc apply -f "$SCRIPT_DIR/base/routes.yaml"
 
     info "Infrastructure deployed"
@@ -137,9 +159,6 @@ build_images() {
     info "Building fkm-app image ..."
     oc start-build fkm-app --from-dir="$PROJECT_ROOT" -n "$NAMESPACE" --follow
 
-    info "Building mlflow-server image ..."
-    oc start-build mlflow-server --from-dir="$PROJECT_ROOT" -n "$NAMESPACE" --follow
-
     info "Images built"
 }
 
@@ -147,10 +166,10 @@ build_images() {
 # 3. RUN PIPELINE JOBS (sequential)
 # ═══════════════════════════════════════════════════════════════════════
 run_jobs() {
-    banner "4/5 — Pipeline Jobs"
+    banner "Pipeline Jobs"
     oc project "$NAMESPACE"
 
-    # Job 1: Seed MinIO with sample data
+    # Job 1: Seed MinIO with sample data + create buckets
     delete_job_if_exists "minio-seed"
     oc apply -f "$SCRIPT_DIR/jobs/01-minio-seed.yaml"
     wait_for_job "minio-seed" 120
@@ -180,7 +199,7 @@ run_jobs() {
     oc apply -f "$SCRIPT_DIR/jobs/06-promote-model.yaml"
     wait_for_job "promote-model" 60
 
-    banner "5/5 — Deploy Inference API"
+    banner "Deploy Inference API"
 
     oc apply -f "$SCRIPT_DIR/base/inference-api.yaml"
     wait_for_pod "inference-api" 120
@@ -221,13 +240,15 @@ oc get routes -n "$NAMESPACE" -o custom-columns='NAME:.metadata.name,HOST:.spec.
 
 echo ""
 INFERENCE_HOST=$(oc get route inference-api -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "<pending>")
-MLFLOW_HOST=$(oc get route mlflow -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "<pending>")
-MINIO_HOST=$(oc get route minio-console -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "<pending>")
+MLFLOW_HOST=$(oc get route mlflow-server -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "<pending>")
+MINIO_HOST=$(oc get route mlflow-minio-console -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "<pending>")
+MARQUEZ_HOST=$(oc get route marquez-web -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "<pending>")
 
 echo -e "${GREEN}Service URLs:${NC}"
 echo "  Inference API  →  https://$INFERENCE_HOST/docs"
 echo "  MLflow UI      →  https://$MLFLOW_HOST"
-echo "  MinIO Console  →  https://$MINIO_HOST  (minioadmin/minioadmin)"
+echo "  MinIO Console  →  https://$MINIO_HOST  (minioadmin/minioadmin123)"
+echo "  Marquez UI     →  https://$MARQUEZ_HOST"
 echo ""
 echo -e "${GREEN}Test the API:${NC}"
 echo "  curl -X POST https://$INFERENCE_HOST/predict \\"

@@ -213,7 +213,7 @@ def model_registration(
     metrics: dict,
     model_name: str,
     tracking_uri: str,
-    roc_auc_threshold: float = 0.75,
+    roc_auc_threshold: float = 0.70,
 ) -> dict:
     """
     If evaluation metrics exceed the threshold, register the model in

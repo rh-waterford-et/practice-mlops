@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: minio-seed
-  namespace: fkm-test
+  namespace: lineage
   labels:
     app.kubernetes.io/part-of: feast-kfp-mlflow
     stage: "01-seed"
@@ -22,12 +22,12 @@ spec:
             - bash
             - -c
             - |
-              echo "Waiting for minio:9000 ..."
-              until bash -c "echo > /dev/tcp/minio/9000" 2>/dev/null; do sleep 2; done
+              echo "Waiting for mlflow-minio:9000 ..."
+              until bash -c "echo > /dev/tcp/mlflow-minio/9000" 2>/dev/null; do sleep 2; done
               echo "MinIO is up"
       containers:
         - name: seed
-          image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
+          image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
           command:
             - sh
             - -c
@@ -38,13 +38,13 @@ spec:
               from minio import Minio
 
               client = Minio(
-                  'minio:9000',
+                  'mlflow-minio:9000',
                   access_key='minioadmin',
-                  secret_key='minioadmin',
+                  secret_key='minioadmin123',
                   secure=False,
               )
 
-              for bucket in ['raw-data', 'mlflow-artifacts']:
+              for bucket in ['raw-data', 'mlflow', 'pipeline-artifacts']:
                   if not client.bucket_exists(bucket):
                       client.make_bucket(bucket)
                       print(f'Created bucket: {bucket}')

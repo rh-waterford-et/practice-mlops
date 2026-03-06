@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: feast-materialize
-  namespace: fkm-test
+  namespace: lineage
   labels:
     app.kubernetes.io/part-of: feast-kfp-mlflow
     stage: "04-feast-materialize"
@@ -27,7 +27,7 @@ spec:
               echo "Redis is up"
       containers:
         - name: feast-materialize
-          image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
+          image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
           command: ["python3", "-m", "src.feature_store.feast_workflow", "materialize"]
           envFrom:
             - configMapRef:

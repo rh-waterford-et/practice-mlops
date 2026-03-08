@@ -28,15 +28,7 @@ spec:
       containers:
         - name: feast-apply
           image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
-          command:
-            - sh
-            - -c
-            - |
-              set -e
-              echo "=== Running feast apply ==="
-              cd /app/src/feature_store
-              feast apply
-              echo "=== feast apply complete ==="
+          command: ["python3", "-m", "src.feature_store.feast_workflow", "apply"]
           envFrom:
             - configMapRef:
                 name: fkm-config

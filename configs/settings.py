@@ -36,6 +36,11 @@ MODEL_NAME = os.getenv("MODEL_NAME", "customer_churn_model")
 # ── Feast ───────────────────────────────────────────────────────────────
 FEAST_REPO_PATH = os.getenv("FEAST_REPO_PATH", "src/feature_store")
 
+# ── OpenLineage ──────────────────────────────────────────────────────────
+# Leave OPENLINEAGE_URL unset (or empty) to disable lineage emission entirely.
+OPENLINEAGE_URL = os.getenv("OPENLINEAGE_URL", "")
+OPENLINEAGE_NAMESPACE = os.getenv("OPENLINEAGE_NAMESPACE", "feast")
+
 # ── Data ────────────────────────────────────────────────────────────────
 RAW_CSV_OBJECT = os.getenv("RAW_CSV_OBJECT", "customers.csv")
 WAREHOUSE_TABLE = "customer_features"

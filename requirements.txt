@@ -13,6 +13,9 @@ boto3>=1.34.0,<2
 # Feast
 feast[postgres,redis]>=0.38.0,<1
 
+# OpenLineage
+openlineage-python>=1.0.0,<2
+
 # MLflow
 mlflow>=3.10.0,<4
 

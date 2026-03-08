@@ -29,6 +29,10 @@ data:
   # ── Feast ───────────────────────────────────────────────────────────
   FEAST_REPO_PATH: "/app/src/feature_store"
 
+  # ── OpenLineage (Marquez) ────────────────────────────────────────────
+  OPENLINEAGE_URL: "http://marquez:5000"
+  OPENLINEAGE_NAMESPACE: "feast"
+
   # ── App ─────────────────────────────────────────────────────────────
   MODEL_NAME: "customer_churn_model"
   RAW_CSV_OBJECT: "customers.csv"

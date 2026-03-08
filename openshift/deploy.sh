@@ -103,6 +103,17 @@ deploy_infra() {
         err "mlflow-server build FAILED – aborting"; exit 1
     fi
 
+    # Build Marquez images (mirrors Docker Hub into the internal registry so
+    # pods never hit Docker Hub rate limits)
+    info "Building marquez-api image ..."
+    if ! oc start-build marquez-api -n "$NAMESPACE" --follow; then
+        err "marquez-api build FAILED – aborting"; exit 1
+    fi
+    info "Building marquez-web image ..."
+    if ! oc start-build marquez-web -n "$NAMESPACE" --follow; then
+        err "marquez-web build FAILED – aborting"; exit 1
+    fi
+
     banner "3/5 — Deploy Infrastructure Services"
 
     # Deploy services in dependency order
@@ -119,7 +130,17 @@ deploy_infra() {
     oc apply -f "$SCRIPT_DIR/base/mlflow.yaml"
     wait_for_pod "mlflow" 180
 
-    # Routes
+    # Marquez (OpenLineage backend) – grant anyuid SCC so the web UI
+    # nginx container can run, then deploy postgres + api + web
+    banner "3a/5 — Marquez (OpenLineage)"
+    oc apply -f "$SCRIPT_DIR/base/marquez.yaml"
+    oc adm policy add-scc-to-user anyuid \
+        -z marquez -n "$NAMESPACE" 2>/dev/null || true
+    wait_for_pod "marquez-postgres" 120
+    wait_for_pod "marquez" 180
+    wait_for_pod "marquez-web" 120
+
+    # Routes (includes the new Marquez route)
     oc apply -f "$SCRIPT_DIR/base/routes.yaml"
 
     info "Infrastructure deployed"
@@ -139,6 +160,12 @@ build_images() {
 
     info "Building mlflow-server image ..."
     oc start-build mlflow-server --from-dir="$PROJECT_ROOT" -n "$NAMESPACE" --follow
+
+    info "Building marquez-api image ..."
+    oc start-build marquez-api -n "$NAMESPACE" --follow
+
+    info "Building marquez-web image ..."
+    oc start-build marquez-web -n "$NAMESPACE" --follow
 
     info "Images built"
 }
@@ -223,11 +250,13 @@ echo ""
 INFERENCE_HOST=$(oc get route inference-api -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "<pending>")
 MLFLOW_HOST=$(oc get route mlflow -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "<pending>")
 MINIO_HOST=$(oc get route minio-console -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "<pending>")
+MARQUEZ_HOST=$(oc get route marquez -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "<pending>")
 
 echo -e "${GREEN}Service URLs:${NC}"
 echo "  Inference API  →  https://$INFERENCE_HOST/docs"
 echo "  MLflow UI      →  https://$MLFLOW_HOST"
 echo "  MinIO Console  →  https://$MINIO_HOST  (minioadmin/minioadmin)"
+echo "  Marquez UI     →  https://$MARQUEZ_HOST"
 echo ""
 echo -e "${GREEN}Test the API:${NC}"
 echo "  curl -X POST https://$INFERENCE_HOST/predict \\"

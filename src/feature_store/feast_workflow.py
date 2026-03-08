@@ -17,6 +17,13 @@ from feast import FeatureStore
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from configs.settings import FEAST_REPO_PATH
+from src.feature_store.lineage import (
+    lineage_run,
+    logical_output,
+    pg_input,
+    pg_output,
+    redis_output,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 logger = logging.getLogger(__name__)
@@ -31,7 +38,11 @@ def apply(repo_path: str | None = None) -> None:
     """Run `feast apply` to register metadata in the Feast registry."""
     path = repo_path or FEAST_REPO_PATH
     logger.info("Running feast apply on %s", path)
-    subprocess.check_call(["feast", "apply"], cwd=path)
+    with lineage_run(
+        "feast.apply",
+        outputs=[pg_output("feast_registry")],
+    ):
+        subprocess.check_call(["feast", "apply"], cwd=path)
     logger.info("feast apply completed")
 
 
@@ -49,7 +60,12 @@ def materialize(
     end = end or datetime.utcnow()
     start = start or (end - timedelta(days=1000))
     logger.info("Materializing features  %s → %s", start.isoformat(), end.isoformat())
-    store.materialize(start_date=start, end_date=end)
+    with lineage_run(
+        "feast.materialize",
+        inputs=[pg_input("customer_features")],
+        outputs=[redis_output("customer_features_view")],
+    ):
+        store.materialize(start_date=start, end_date=end)
     logger.info("Materialization complete – online store updated")
 
 
@@ -85,10 +101,15 @@ def get_historical_features(
         ]
 
     logger.info("Fetching historical features for %d entities", len(entity_df))
-    training_df = store.get_historical_features(
-        entity_df=entity_df,
-        features=features,
-    ).to_df()
+    with lineage_run(
+        "feast.get_historical_features",
+        inputs=[pg_input("customer_features")],
+        outputs=[logical_output("customer_features_training_dataset")],
+    ):
+        training_df = store.get_historical_features(
+            entity_df=entity_df,
+            features=features,
+        ).to_df()
 
     logger.info("Historical features retrieved – shape %s", training_df.shape)
     return training_df

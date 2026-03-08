@@ -27,3 +27,18 @@ spec:
   resources:
     requests:
       storage: 5Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: marquez-postgres-data
+  namespace: fkm-test
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    app.kubernetes.io/component: marquez
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi

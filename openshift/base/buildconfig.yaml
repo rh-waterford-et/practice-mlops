@@ -59,3 +59,112 @@ spec:
     to:
       kind: ImageStreamTag
       name: mlflow-server:latest
+
+---
+# ImageStream for Marquez API
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: marquez-api
+  namespace: fkm-test
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+
+---
+# BuildConfig – builds Marquez API from the GitHub source using only Red Hat UBI
+# base images so that Docker Hub rate limits never apply.
+# Build stages:
+#   1) ubi9/openjdk-17  – clones tag 0.50.0 and runs the Gradle shadow-jar task
+#   2) ubi9/openjdk-17-runtime – copies the fat JAR + config into a slim runtime
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: marquez-api
+  namespace: fkm-test
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  source:
+    type: Dockerfile
+    dockerfile: |
+      FROM registry.access.redhat.com/ubi9/openjdk-17:latest AS build
+      USER root
+      RUN microdnf install -y git && microdnf clean all
+      WORKDIR /build
+      RUN git clone --depth=1 --branch 0.50.0 \
+          https://github.com/MarquezProject/marquez.git .
+      RUN ./gradlew --no-daemon --console=plain clean :api:shadowJar
+
+      FROM registry.access.redhat.com/ubi9/openjdk-17-runtime:latest
+      USER root
+      WORKDIR /app
+      COPY --from=build /build/api/build/libs/ /app/
+      COPY --from=build /build/marquez.dev.yml /app/marquez.dev.yml
+      COPY --from=build /build/docker/entrypoint.sh /app/entrypoint.sh
+      RUN chmod +x /app/entrypoint.sh \
+          && chown -R 1001:0 /app && chmod -R g=u /app
+      USER 1001
+      EXPOSE 5000 5001
+      ENTRYPOINT ["/app/entrypoint.sh"]
+  strategy:
+    type: Docker
+  output:
+    to:
+      kind: ImageStreamTag
+      name: marquez-api:latest
+
+---
+# ImageStream for Marquez Web UI
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: marquez-web
+  namespace: fkm-test
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+
+---
+# BuildConfig – builds Marquez Web from GitHub source using UBI9 Node.js 18.
+# The React app is compiled and served via the bundled Node.js reverse proxy
+# (setupProxy.js) which forwards /api/v1 calls to the marquez API service.
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: marquez-web
+  namespace: fkm-test
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  source:
+    type: Dockerfile
+    dockerfile: |
+      FROM registry.access.redhat.com/ubi9/nodejs-18:latest
+      USER root
+      RUN dnf install -y git --nodocs --setopt=install_weak_deps=0 && dnf clean all
+      RUN git clone --depth=1 --branch 0.50.0 \
+          https://github.com/MarquezProject/marquez.git /marquez
+      WORKDIR /marquez/web
+      ENV NODE_OPTIONS="--max-old-space-size=2048"
+      RUN npm install --legacy-peer-deps
+      RUN npm install --legacy-peer-deps @chakra-ui/react@^2 history framer-motion
+      RUN node -e " \
+        const fs = require('fs'); \
+        let c = fs.readFileSync('webpack.common.js', 'utf8'); \
+        c = c.replace('loader: \"ts-loader\"', 'loader: \"ts-loader\", options: { transpileOnly: true }'); \
+        fs.writeFileSync('webpack.common.js', c); \
+        console.log('Patched webpack: transpileOnly=true'); \
+      "
+      RUN npm run build
+      RUN chown -R 1001:0 /marquez && chmod -R g=u /marquez
+      USER 1001
+      ENV MARQUEZ_HOST=marquez
+      ENV MARQUEZ_PORT=5000
+      ENV WEB_PORT=3000
+      EXPOSE 3000
+      CMD ["node", "/marquez/web/setupProxy.js"]
+  strategy:
+    type: Docker
+  output:
+    to:
+      kind: ImageStreamTag
+      name: marquez-web:latest

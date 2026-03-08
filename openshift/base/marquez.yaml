@@ -1,0 +1,288 @@
+---
+# ServiceAccount used by both marquez-api and marquez-web pods.
+# deploy.sh adds the anyuid SCC to this SA so the Java/Node containers
+# can run with their baked-in non-root UIDs.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: marquez
+  namespace: fkm-test
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    app.kubernetes.io/component: marquez
+
+---
+# Dedicated PostgreSQL instance for Marquez metadata.
+# Uses the same Quay-hosted sclorg image as the main warehouse PostgreSQL
+# so there are no Docker Hub rate-limit issues.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marquez-postgres
+  namespace: fkm-test
+  labels:
+    app: marquez-postgres
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    app.kubernetes.io/component: marquez
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: marquez-postgres
+  template:
+    metadata:
+      labels:
+        app: marquez-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: quay.io/sclorg/postgresql-15-c9s:latest
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRESQL_USER
+              value: "marquez"
+            - name: POSTGRESQL_PASSWORD
+              value: "marquez"
+            - name: POSTGRESQL_DATABASE
+              value: "marquez"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+          readinessProbe:
+            exec:
+              command: [bash, -c, "pg_isready -h 127.0.0.1 -p 5432"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: [bash, -c, "pg_isready -h 127.0.0.1 -p 5432"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "500m"
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: marquez-postgres-data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marquez-postgres
+  namespace: fkm-test
+  labels:
+    app: marquez-postgres
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  selector:
+    app: marquez-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+
+---
+# Marquez API – built from source via the marquez-api BuildConfig using
+# only Red Hat UBI base images (no Docker Hub pull).
+# The internal registry image is referenced so there is no external pull.
+# MARQUEZ_DB_* vars are read by the Dropwizard variable substitution in
+# the marquez.dev.yml config that ships inside the image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marquez
+  namespace: fkm-test
+  labels:
+    app: marquez
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    app.kubernetes.io/component: marquez
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: marquez
+  template:
+    metadata:
+      labels:
+        app: marquez
+    spec:
+      serviceAccountName: marquez
+      initContainers:
+        - name: wait-for-db
+          image: registry.access.redhat.com/ubi9:latest
+          command:
+            - bash
+            - -c
+            - |
+              echo "Waiting for marquez-postgres:5432 ..."
+              until bash -c "echo > /dev/tcp/marquez-postgres/5432" 2>/dev/null; do
+                sleep 2
+              done
+              echo "marquez-postgres is up"
+      containers:
+        - name: marquez
+          image: image-registry.openshift-image-registry.svc:5000/fkm-test/marquez-api:latest
+          ports:
+            - name: http
+              containerPort: 5000
+            - name: admin
+              containerPort: 5001
+          env:
+            - name: MARQUEZ_PORT
+              value: "5000"
+            - name: MARQUEZ_ADMIN_PORT
+              value: "5001"
+            # marquez.dev.yml may use either MARQUEZ_DB_* or POSTGRES_* for
+            # the DB connection string depending on the exact 0.50.0 config.
+            # Both sets are provided so the correct one is always resolved.
+            - name: MARQUEZ_DB_HOST
+              value: "marquez-postgres"
+            - name: MARQUEZ_DB_PORT
+              value: "5432"
+            - name: MARQUEZ_DB_NAME
+              value: "marquez"
+            - name: MARQUEZ_DB_USER
+              value: "marquez"
+            - name: MARQUEZ_DB_PASSWORD
+              value: "marquez"
+            - name: POSTGRES_HOST
+              value: "marquez-postgres"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: "marquez"
+            - name: POSTGRES_USER
+              value: "marquez"
+            - name: POSTGRES_PASSWORD
+              value: "marquez"
+          readinessProbe:
+            httpGet:
+              path: /api/v1/namespaces
+              port: 5000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /api/v1/namespaces
+              port: 5000
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marquez
+  namespace: fkm-test
+  labels:
+    app: marquez
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  selector:
+    app: marquez
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+    - name: admin
+      port: 5001
+      targetPort: 5001
+
+---
+# Marquez Web UI – React SPA served via Node.js proxy.
+# MARQUEZ_HOST / MARQUEZ_PORT tell setupProxy.js where to forward
+# /api/v1 requests (i.e. the marquez Service above).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marquez-web
+  namespace: fkm-test
+  labels:
+    app: marquez-web
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    app.kubernetes.io/component: marquez
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: marquez-web
+  template:
+    metadata:
+      labels:
+        app: marquez-web
+    spec:
+      serviceAccountName: marquez
+      initContainers:
+        - name: wait-for-api
+          image: registry.access.redhat.com/ubi9:latest
+          command:
+            - bash
+            - -c
+            - |
+              echo "Waiting for marquez API :5000 ..."
+              until bash -c "echo > /dev/tcp/marquez/5000" 2>/dev/null; do
+                sleep 2
+              done
+              echo "Marquez API is up"
+      containers:
+        - name: marquez-web
+          image: image-registry.openshift-image-registry.svc:5000/fkm-test/marquez-web:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: MARQUEZ_HOST
+              value: "marquez"
+            - name: MARQUEZ_PORT
+              value: "5000"
+            - name: WEB_PORT
+              value: "3000"
+          readinessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 40
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "500m"
+              memory: 512Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marquez-web
+  namespace: fkm-test
+  labels:
+    app: marquez-web
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  selector:
+    app: marquez-web
+  ports:
+    - port: 3000
+      targetPort: 3000

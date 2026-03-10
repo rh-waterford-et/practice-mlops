@@ -19,7 +19,7 @@ from kfp.client import Client
 NAMESPACE = "lineage"
 DSPA_NAME = "dspa"
 PIPELINE_YAML = "customer_churn_pipeline.yaml"
-PIPELINE_NAME = "Customer Churn ML Pipeline"
+PIPELINE_NAME = "customer-churn-ml-pipeline"
 
 
 def get_dsp_route() -> str:
@@ -87,9 +87,14 @@ def main():
     except Exception as e:
         if "already exist" in str(e).lower():
             print("Pipeline already exists, uploading as new version...")
-            pipelines = client.list_pipelines(filter=f'{"predicates":[{{"key":"name","op":"EQUALS","string_value":"{PIPELINE_NAME}"}}]}')
+            pipelines = client.list_pipelines(page_size=50)
+            pid = None
             if pipelines.pipelines:
-                pid = pipelines.pipelines[0].pipeline_id
+                for p in pipelines.pipelines:
+                    if p.display_name == PIPELINE_NAME:
+                        pid = p.pipeline_id
+                        break
+            if pid:
                 version = client.upload_pipeline_version(
                     pipeline_package_path=PIPELINE_YAML,
                     pipeline_version_name=f"v{int(time.time())}",
@@ -97,7 +102,7 @@ def main():
                 )
                 print(f"New version created: id={version.pipeline_version_id}")
             else:
-                raise
+                raise RuntimeError(f"Could not find pipeline '{PIPELINE_NAME}'")
         else:
             raise
 

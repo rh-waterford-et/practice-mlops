@@ -105,6 +105,11 @@ deploy_infra() {
         err "fkm-app build FAILED – aborting"; exit 1
     fi
 
+    info "Building spark-etl image ..."
+    if ! oc start-build spark-etl --from-dir="$PROJECT_ROOT" -n "$NAMESPACE" --follow; then
+        err "spark-etl build FAILED – aborting"; exit 1
+    fi
+
     banner "3/6 — Deploy Databases & Storage"
 
     # MinIO (shared S3 storage) — includes PVC, Deployment, Service
@@ -158,6 +163,9 @@ build_images() {
 
     info "Building fkm-app image ..."
     oc start-build fkm-app --from-dir="$PROJECT_ROOT" -n "$NAMESPACE" --follow
+
+    info "Building spark-etl image ..."
+    oc start-build spark-etl --from-dir="$PROJECT_ROOT" -n "$NAMESPACE" --follow
 
     info "Images built"
 }

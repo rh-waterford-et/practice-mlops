@@ -31,8 +31,8 @@ uvicorn>=0.29.0,<1
 pydantic>=2.6.0,<3
 httpx>=0.27.0,<1
 
-# Validation
-great-expectations>=0.18.0,<1
+# Validation (native OL action incompatible with GE 1.x; OL events emitted manually)
+great-expectations>=1.0.0,<2
 
 # Utilities
 python-dotenv>=1.0.0,<2

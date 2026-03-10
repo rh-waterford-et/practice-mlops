@@ -1,0 +1,29 @@
+FROM registry.access.redhat.com/ubi9/python-311:latest
+
+USER 0
+
+# Install Java 17 (required for Spark)
+RUN dnf install -y java-17-openjdk-headless && dnf clean all
+ENV JAVA_HOME=/usr/lib/jvm/jre-17-openjdk
+
+# Install PySpark
+RUN pip3 install --no-cache-dir pyspark==3.5.4
+
+ENV SPARK_HOME=/opt/app-root/lib/python3.11/site-packages/pyspark
+
+# Download required JARs into a known location
+RUN mkdir -p /opt/spark/jars && \
+    curl -fSL -o /opt/spark/jars/postgresql.jar \
+      "https://jdbc.postgresql.org/download/postgresql-42.7.4.jar" && \
+    curl -fSL -o /opt/spark/jars/openlineage-spark.jar \
+      "https://repo1.maven.org/maven2/io/openlineage/openlineage-spark_2.12/1.44.0/openlineage-spark_2.12-1.44.0.jar" && \
+    curl -fSL -o ${SPARK_HOME}/jars/hadoop-aws-3.3.4.jar \
+      "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar" && \
+    curl -fSL -o ${SPARK_HOME}/jars/aws-java-sdk-bundle-1.12.262.jar \
+      "https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar"
+
+COPY src/etl/spark_etl.py /opt/spark/spark_etl.py
+
+USER 1001
+
+ENTRYPOINT ["python3", "/opt/spark/spark_etl.py"]

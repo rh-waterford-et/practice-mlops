@@ -16,14 +16,19 @@ RUN mkdir -p /opt/spark/jars && \
     curl -fSL -o /opt/spark/jars/postgresql.jar \
       "https://jdbc.postgresql.org/download/postgresql-42.7.4.jar" && \
     curl -fSL -o /opt/spark/jars/openlineage-spark.jar \
-      "https://repo1.maven.org/maven2/io/openlineage/openlineage-spark_2.12/1.44.0/openlineage-spark_2.12-1.44.0.jar" && \
+      "https://repo1.maven.org/maven2/io/openlineage/openlineage-spark_2.12/1.45.0/openlineage-spark_2.12-1.45.0.jar" && \
     curl -fSL -o ${SPARK_HOME}/jars/hadoop-aws-3.3.4.jar \
       "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar" && \
     curl -fSL -o ${SPARK_HOME}/jars/aws-java-sdk-bundle-1.12.262.jar \
       "https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar"
 
 COPY src/etl/spark_etl.py /opt/spark/spark_etl.py
+COPY src/etl/spark_etl_native_lineage.py /opt/spark/spark_etl_native_lineage.py
+
+# Add KFP OpenLineage decorator
+COPY kfp_openlineage_decorator.py /opt/spark/kfp_openlineage_decorator.py
+ENV PYTHONPATH=/opt/spark:$PYTHONPATH
 
 USER 1001
 
-ENTRYPOINT ["python3", "/opt/spark/spark_etl.py"]
+ENTRYPOINT ["python3", "/opt/spark/spark_etl_native_lineage.py"]

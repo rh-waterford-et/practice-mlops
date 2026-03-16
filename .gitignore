@@ -7,10 +7,5 @@ dist/
 build/
 .venv/
 venv/
-*.yaml
-!docker-compose.yml
-!src/feature_store/feature_store.yaml
-!customer_churn_pipeline.yaml
-!openshift/**/*.yaml
 data/registry.db
 .ipynb_checkpoints/

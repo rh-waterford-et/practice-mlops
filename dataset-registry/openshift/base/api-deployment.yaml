@@ -1,0 +1,113 @@
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: dataset-registry-api
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: dataset-registry
+
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: dataset-registry-api
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: dataset-registry
+spec:
+  source:
+    type: Binary
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+  output:
+    to:
+      kind: ImageStreamTag
+      name: dataset-registry-api:latest
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dataset-registry-api
+  namespace: lineage
+  labels:
+    app: dataset-registry-api
+    app.kubernetes.io/part-of: dataset-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dataset-registry-api
+  template:
+    metadata:
+      labels:
+        app: dataset-registry-api
+    spec:
+      containers:
+        - name: api
+          image: image-registry.openshift-image-registry.svc:5000/lineage/dataset-registry-api:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DB_HOST
+              value: registry-db
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_USER
+              value: registry
+            - name: DB_PASSWORD
+              value: registry
+            - name: DB_NAME
+              value: registry
+            - name: MARQUEZ_URL
+              value: "http://marquez:80"
+            - name: S3_ENDPOINT
+              value: "http://mlflow-minio:9000"
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-minio-secret
+                  key: MINIO_ROOT_USER
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-minio-secret
+                  key: MINIO_ROOT_PASSWORD
+          readinessProbe:
+            httpGet:
+              path: /docs
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /docs
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dataset-registry-api
+  namespace: lineage
+  labels:
+    app: dataset-registry-api
+    app.kubernetes.io/part-of: dataset-registry
+spec:
+  selector:
+    app: dataset-registry-api
+  ports:
+    - port: 8080
+      targetPort: 8080

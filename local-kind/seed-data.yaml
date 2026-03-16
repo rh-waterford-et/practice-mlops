@@ -1,0 +1,42 @@
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-raw-data
+  namespace: lineage
+spec:
+  ttlSecondsAfterFinished: 120
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: quay.io/minio/mc:latest
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-minio-secret
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-minio-secret
+                  key: MINIO_ROOT_PASSWORD
+          volumeMounts:
+            - name: csv
+              mountPath: /data
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until mc alias set myminio http://mlflow-minio:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD 2>/dev/null; do
+                echo "Waiting for MinIO..."
+                sleep 3
+              done
+              mc cp /data/customers.csv myminio/raw-data/customers.csv
+              echo "Uploaded customers.csv to s3://raw-data/customers.csv"
+      volumes:
+        - name: csv
+          configMap:
+            name: seed-customers-csv

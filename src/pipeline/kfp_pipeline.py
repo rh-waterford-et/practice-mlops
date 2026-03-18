@@ -530,12 +530,15 @@ def ds_model_training(
     s3_endpoint: str,
     aws_key: str,
     aws_secret: str,
+    pg_host: str = "postgres",
+    pg_database: str = "warehouse",
 ) -> str:
     """Train XGBoost, log to MLflow. Returns JSON with run_id, model_uri, metrics."""
     import json
     import os
 
     import mlflow
+    import mlflow.data
     import mlflow.sklearn
     import numpy as np
     import pandas as pd
@@ -586,8 +589,9 @@ def ds_model_training(
     mlflow.set_experiment(experiment_name)
 
     with mlflow.start_run() as run:
+        dataset_source = f"postgresql://{pg_host}:5432/{pg_database}.public.customer_features"
         train_dataset = mlflow.data.from_pandas(
-            df, name="customer_features_view",
+            df, source=dataset_source, name="customer_features_view",
         )
         mlflow.log_input(train_dataset, context="training")
 
@@ -777,6 +781,8 @@ def customer_churn_pipeline(
         s3_endpoint=s3_endpoint,
         aws_key=aws_key,
         aws_secret=aws_secret,
+        pg_host=pg_host,
+        pg_database="warehouse",
     )
     train_task.set_caching_options(False)
 

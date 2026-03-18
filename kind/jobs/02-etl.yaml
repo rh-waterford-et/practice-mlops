@@ -1,0 +1,62 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: etl-job
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    stage: "02-etl"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        job: etl
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-postgres
+          image: alpine:3
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for postgres:5432 ..."
+              until nc -z postgres 5432 2>/dev/null; do sleep 2; done
+              echo "PostgreSQL is up"
+        - name: wait-for-minio
+          image: alpine:3
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for mlflow-minio:9000 ..."
+              until nc -z mlflow-minio 9000 2>/dev/null; do sleep 2; done
+              echo "MinIO is up"
+        - name: wait-for-marquez
+          image: alpine:3
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for marquez:80 ..."
+              until nc -z marquez 80 2>/dev/null; do sleep 2; done
+              echo "Marquez is up"
+      containers:
+        - name: spark-etl
+          image: spark-etl:latest
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef:
+                name: fkm-config
+            - secretRef:
+                name: fkm-credentials
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi

@@ -1,0 +1,71 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-seed
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    stage: "01-seed"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        job: minio-seed
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-minio
+          image: alpine:3
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for mlflow-minio:9000 ..."
+              until nc -z mlflow-minio 9000 2>/dev/null; do sleep 2; done
+              echo "MinIO is up"
+      containers:
+        - name: seed
+          image: fkm-app:latest
+          imagePullPolicy: Never
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              echo "=== Creating MinIO buckets and uploading seed data ==="
+              python3 -c "
+              from minio import Minio
+
+              client = Minio(
+                  'mlflow-minio:9000',
+                  access_key='minioadmin',
+                  secret_key='minioadmin123',
+                  secure=False,
+              )
+
+              for bucket in ['raw-data', 'mlflow', 'pipeline-artifacts']:
+                  if not client.bucket_exists(bucket):
+                      client.make_bucket(bucket)
+                      print(f'Created bucket: {bucket}')
+                  else:
+                      print(f'Bucket exists: {bucket}')
+
+              client.fput_object('raw-data', 'customers.csv', '/app/data/customers.csv')
+              print('Uploaded customers.csv to raw-data bucket')
+              "
+              echo "=== MinIO seed complete ==="
+          envFrom:
+            - configMapRef:
+                name: fkm-config
+            - secretRef:
+                name: fkm-credentials
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

@@ -1,0 +1,147 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mlflow-minio-secret
+  namespace: lineage
+  labels:
+    app: mlflow-minio
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+type: Opaque
+stringData:
+  MINIO_ROOT_USER: "minioadmin"
+  MINIO_ROOT_PASSWORD: "minioadmin123"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mlflow-config
+  namespace: lineage
+  labels:
+    app: mlflow-server
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+data:
+  MLFLOW_BACKEND_STORE_URI: "postgresql://mlflow:mlflow123@mlflow-db:5432/mlflow"
+  MLFLOW_ARTIFACTS_DESTINATION: "s3://mlflow/artifacts"
+  MLFLOW_S3_ENDPOINT_URL: "http://mlflow-minio:9000"
+  MLFLOW_S3_IGNORE_TLS: "true"
+  MLFLOW_HOST: "0.0.0.0"
+  MLFLOW_PORT: "5000"
+  AWS_DEFAULT_REGION: "us-east-1"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow-server
+  namespace: lineage
+  labels:
+    app: mlflow-server
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow-server
+  template:
+    metadata:
+      labels:
+        app: mlflow-server
+    spec:
+      initContainers:
+        - name: wait-for-mlflow-db
+          image: alpine:3
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for mlflow-db:5432 ..."
+              until nc -z mlflow-db 5432 2>/dev/null; do sleep 2; done
+              echo "mlflow-db is up"
+      containers:
+        - name: mlflow
+          image: ghcr.io/mlflow/mlflow:v3.8.1
+          ports:
+            - containerPort: 5000
+          command:
+            - /bin/bash
+            - -c
+            - |
+              pip install --no-cache-dir --target /tmp/pip psycopg2-binary boto3
+              export PYTHONPATH=/tmp/pip:$PYTHONPATH
+              mlflow server \
+                --backend-store-uri "${MLFLOW_BACKEND_STORE_URI}" \
+                --artifacts-destination "${MLFLOW_ARTIFACTS_DESTINATION}" \
+                --serve-artifacts \
+                --host "${MLFLOW_HOST}" \
+                --port "${MLFLOW_PORT}" \
+                --allowed-hosts "*"
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-minio-secret
+                  key: MINIO_ROOT_USER
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-minio-secret
+                  key: MINIO_ROOT_PASSWORD
+          envFrom:
+            - configMapRef:
+                name: mlflow-config
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 60
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 90
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-server
+  namespace: lineage
+  labels:
+    app: mlflow-server
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  selector:
+    app: mlflow-server
+  ports:
+    - port: 5000
+      targetPort: 5000
+
+---
+# NodePort for localhost access
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-server-nodeport
+  namespace: lineage
+  labels:
+    app: mlflow-server
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  type: NodePort
+  selector:
+    app: mlflow-server
+  ports:
+    - port: 5000
+      targetPort: 5000
+      nodePort: 30500

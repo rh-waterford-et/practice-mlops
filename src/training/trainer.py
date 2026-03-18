@@ -92,18 +92,26 @@ def train_and_log(
         mlflow.create_experiment(experiment_name, artifact_location=artifact_root)
     mlflow.set_experiment(experiment_name)
 
+    X_train, X_test, y_train, y_test, encoders = prepare_data(df)
+
+    # Balance classes: weight positives by neg/pos ratio so rare churners
+    # contribute equally to the loss as the majority non-churn class.
+    neg = int((y_train == 0).sum())
+    pos = int((y_train == 1).sum())
+    spw = round(neg / pos, 2) if pos > 0 else 1.0
+    logger.info("Class counts – neg: %d  pos: %d  scale_pos_weight: %.2f", neg, pos, spw)
+
     default_params = {
         "max_depth": 6,
         "learning_rate": 0.1,
         "n_estimators": 200,
         "objective": "binary:logistic",
         "eval_metric": "logloss",
+        "scale_pos_weight": spw,
         "seed": 42,
     }
     if params:
         default_params.update(params)
-
-    X_train, X_test, y_train, y_test, encoders = prepare_data(df)
 
     with mlflow.start_run() as run:
         train_dataset = mlflow.data.from_pandas(

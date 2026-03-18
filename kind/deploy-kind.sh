@@ -6,16 +6,17 @@
 #   ./kind/deploy-kind.sh [MODE]
 #
 # Modes:
-#   all        (default) Full deploy: cluster → build → infra → jobs → api
+#   all        (default) Full deploy: cluster → build → infra → jobs → api → registry
 #   cluster    Create the Kind cluster only
-#   build      Build & load Docker images only
+#   build      Build & load fkm-app + spark-etl images
 #   infra      Deploy infrastructure (DBs, MinIO, Redis, Marquez, MLflow)
 #   jobs       Run the 6 sequential data/ML jobs
 #   api        Deploy the FastAPI inference service
+#   registry   Build & deploy the Dataset Registry (API + UI)
 #   teardown   Delete the Kind cluster entirely
 #
 # Prerequisites (must be in PATH):
-#   docker, kind, kubectl
+#   docker (or podman), kind, kubectl
 # ============================================================
 set -euo pipefail
 
@@ -37,20 +38,41 @@ header() { echo -e "\n${BOLD}${CYAN}══════════════�
            echo -e "${BOLD}${CYAN}  $*${NC}"; \
            echo -e "${BOLD}${CYAN}══════════════════════════════════════${NC}"; }
 
+# ── Container runtime detection (Docker or Podman) ───────────
+detect_runtime() {
+  if command -v podman &>/dev/null; then
+    CONTAINER_RT="podman"
+    export KIND_EXPERIMENTAL_PROVIDER=podman
+  elif command -v docker &>/dev/null; then
+    CONTAINER_RT="docker"
+  else
+    die "Neither podman nor docker found.\n  brew install podman  (or install Docker Desktop)"
+  fi
+  PLATFORM="linux/$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
+  ok "Container runtime: ${CONTAINER_RT}  platform: ${PLATFORM}"
+}
+
 # ── Prerequisite check ────────────────────────────────────────
 check_prereqs() {
   header "Checking prerequisites"
-  for cmd in docker kind kubectl; do
+  detect_runtime
+  for cmd in kind kubectl; do
     if command -v "$cmd" &>/dev/null; then
-      ok "$cmd found ($(command -v "$cmd"))"
+      ok "$cmd found"
     else
-      die "$cmd is not installed or not in PATH. Please install it first."
+      die "$cmd not found. Install with: brew install $cmd"
     fi
   done
-  if ! docker info &>/dev/null; then
-    die "Docker daemon is not running. Please start Docker Desktop."
+  if [[ "${CONTAINER_RT}" == "podman" ]]; then
+    if ! podman machine info &>/dev/null 2>&1; then
+      die "Podman machine is not running. Start it with: podman machine start"
+    fi
+  else
+    if ! docker info &>/dev/null; then
+      die "Docker daemon is not running. Please start Docker Desktop."
+    fi
   fi
-  ok "Docker daemon is running"
+  ok "All prerequisites satisfied"
 }
 
 # ── Cluster ───────────────────────────────────────────────────
@@ -68,14 +90,16 @@ create_cluster() {
 
 # ── Build & load images ───────────────────────────────────────
 build_and_load_images() {
-  header "Building Docker images"
+  header "Building app images"
 
   log "Building fkm-app:latest (main app image) ..."
-  docker build -t fkm-app:latest -f "$ROOT_DIR/Dockerfile" "$ROOT_DIR"
+  ${CONTAINER_RT} build --platform "${PLATFORM}" -t fkm-app:latest \
+    -f "$ROOT_DIR/Dockerfile" "$ROOT_DIR"
   ok "fkm-app:latest built"
 
   log "Building spark-etl:latest (PySpark ETL image) ..."
-  docker build -t spark-etl:latest -f "$ROOT_DIR/Dockerfile.spark" "$ROOT_DIR"
+  ${CONTAINER_RT} build --platform "${PLATFORM}" -t spark-etl:latest \
+    -f "$ROOT_DIR/Dockerfile.spark" "$ROOT_DIR"
   ok "spark-etl:latest built"
 
   header "Loading images into Kind cluster"
@@ -86,6 +110,34 @@ build_and_load_images() {
   log "Loading spark-etl:latest ..."
   kind load docker-image spark-etl:latest --name "$CLUSTER_NAME"
   ok "spark-etl:latest loaded"
+}
+
+# ── Build & load dataset-registry images ─────────────────────
+build_and_load_registry_images() {
+  header "Building dataset-registry images"
+
+  local api_dir="$ROOT_DIR/dataset-registry/backend"
+  local ui_dir="$ROOT_DIR/dataset-registry/frontend"
+
+  if [[ ! -d "$api_dir" ]]; then
+    warn "dataset-registry/backend not found – skipping registry build"
+    return 0
+  fi
+
+  log "Building dataset-registry-api:local ..."
+  ${CONTAINER_RT} build --platform "${PLATFORM}" \
+    -t dataset-registry-api:local "$api_dir"
+  ok "dataset-registry-api:local built"
+
+  log "Building dataset-registry-ui:local ..."
+  ${CONTAINER_RT} build --platform "${PLATFORM}" \
+    -t dataset-registry-ui:local "$ui_dir"
+  ok "dataset-registry-ui:local built"
+
+  log "Loading registry images into Kind ..."
+  kind load docker-image dataset-registry-api:local --name "$CLUSTER_NAME"
+  kind load docker-image dataset-registry-ui:local --name "$CLUSTER_NAME"
+  ok "Registry images loaded"
 }
 
 # ── Namespace & config ────────────────────────────────────────
@@ -191,6 +243,26 @@ deploy_api() {
   ok "Inference API ready"
 }
 
+# ── Dataset Registry ──────────────────────────────────────────
+deploy_registry() {
+  header "Deploying dataset registry"
+
+  local api_dir="$ROOT_DIR/dataset-registry/backend"
+  if [[ ! -d "$api_dir" ]]; then
+    warn "dataset-registry/backend not found – skipping registry deploy"
+    return 0
+  fi
+
+  kubectl apply -f "$SCRIPT_DIR/base/dataset-registry.yaml"
+  log "Waiting for registry-db ..."
+  kubectl rollout status deployment/registry-db -n "$NAMESPACE" --timeout=120s
+  log "Waiting for dataset-registry-api ..."
+  kubectl rollout status deployment/dataset-registry-api -n "$NAMESPACE" --timeout=120s
+  log "Waiting for dataset-registry-ui ..."
+  kubectl rollout status deployment/dataset-registry-ui -n "$NAMESPACE" --timeout=120s
+  ok "Dataset Registry ready"
+}
+
 # ── Teardown ──────────────────────────────────────────────────
 teardown() {
   header "Tearing down Kind cluster: $CLUSTER_NAME"
@@ -200,18 +272,20 @@ teardown() {
 
 # ── Print service URLs ────────────────────────────────────────
 print_urls() {
-  header "Service URLs (via localhost port-forwards)"
+  header "Service URLs"
   echo ""
-  echo -e "  ${BOLD}MinIO Console${NC}   http://localhost:9001   (user: minioadmin / pass: minioadmin123)"
-  echo -e "  ${BOLD}MinIO S3 API${NC}    http://localhost:9000"
-  echo -e "  ${BOLD}MLflow UI${NC}       http://localhost:5000"
-  echo -e "  ${BOLD}Marquez Web UI${NC}  http://localhost:3000"
-  echo -e "  ${BOLD}Inference API${NC}   http://localhost:8000"
+  echo -e "  ${BOLD}MinIO Console${NC}        http://localhost:9001   (minioadmin / minioadmin123)"
+  echo -e "  ${BOLD}MinIO S3 API${NC}         http://localhost:9000"
+  echo -e "  ${BOLD}MLflow UI${NC}            http://localhost:5000"
+  echo -e "  ${BOLD}Marquez Web UI${NC}       http://localhost:3000"
+  echo -e "  ${BOLD}Inference API${NC}        http://localhost:8000"
+  echo -e "  ${BOLD}Dataset Registry API${NC} http://localhost:8080/docs"
+  echo -e "  ${BOLD}Dataset Registry UI${NC}  http://localhost:8081"
   echo ""
-  echo -e "  Example prediction request:"
+  echo -e "  Example prediction:"
   echo -e "  ${CYAN}curl -X POST http://localhost:8000/predict \\${NC}"
   echo -e "  ${CYAN}     -H 'Content-Type: application/json' \\${NC}"
-  echo -e "  ${CYAN}     -d '{\"entity_id\": 1}'${NC}"
+  echo -e "  ${CYAN}     -d '{\"entity_ids\": [1, 2, 3]}'${NC}"
   echo ""
 }
 
@@ -221,10 +295,12 @@ case "$MODE" in
     check_prereqs
     create_cluster
     build_and_load_images
+    build_and_load_registry_images
     apply_config
     deploy_infra
     run_jobs
     deploy_api
+    deploy_registry
     print_urls
     ;;
   cluster)
@@ -246,11 +322,17 @@ case "$MODE" in
     deploy_api
     print_urls
     ;;
+  registry)
+    check_prereqs
+    build_and_load_registry_images
+    deploy_registry
+    print_urls
+    ;;
   teardown)
     teardown
     ;;
   *)
-    echo "Usage: $0 [all|cluster|build|infra|jobs|api|teardown]"
+    echo "Usage: $0 [all|cluster|build|infra|jobs|api|registry|teardown]"
     exit 1
     ;;
 esac

@@ -24,3 +24,11 @@ nodes:
       - containerPort: 30800
         hostPort: 8000
         protocol: TCP
+      # Dataset Registry API
+      - containerPort: 30880
+        hostPort: 8080
+        protocol: TCP
+      # Dataset Registry UI
+      - containerPort: 30881
+        hostPort: 8081
+        protocol: TCP

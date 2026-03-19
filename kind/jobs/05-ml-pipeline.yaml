@@ -7,8 +7,8 @@ metadata:
     app.kubernetes.io/part-of: feast-kfp-mlflow
     stage: "05-ml-pipeline"
 spec:
-  backoffLimit: 2
-  ttlSecondsAfterFinished: 600
+  backoffLimit: 4
+  ttlSecondsAfterFinished: 3600
   template:
     metadata:
       labels:

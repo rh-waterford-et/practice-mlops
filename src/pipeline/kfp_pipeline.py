@@ -23,44 +23,6 @@ SPARK_IMAGE = (
 )
 
 
-FEAST_STORE_YAML = """\
-project: customer_churn
-provider: local
-registry:
-  registry_type: sql
-  path: postgresql://feast:feast@{pg_host}:5432/warehouse
-  cache_ttl_seconds: 60
-offline_store:
-  type: postgres
-  host: {pg_host}
-  port: 5432
-  database: warehouse
-  db_schema: public
-  user: feast
-  password: feast
-online_store:
-  type: redis
-  connection_string: {redis_host}:6379
-entity_key_serialization_version: 2
-openlineage:
-  enabled: true
-  transport_type: http
-  transport_url: http://marquez
-  namespace: churn-demo
-  emit_on_apply: true
-  emit_on_materialize: true
-"""
-
-
-def _patch_feast_yaml(feast_repo_path: str, pg_host: str, redis_host: str) -> None:
-    """Write feature_store.yaml pointing at in-cluster services."""
-    import os
-    fs_yaml = os.path.join(feast_repo_path, "feature_store.yaml")
-    with open(fs_yaml, "w") as f:
-        f.write(FEAST_STORE_YAML.format(pg_host=pg_host, redis_host=redis_host))
-    print(f"Patched {fs_yaml} -> pg={pg_host}, redis={redis_host}")
-
-
 # =======================================================================
 # PLATFORM - Spark ETL (CSV -> transform -> PostgreSQL, emits OpenLineage)
 # =======================================================================
@@ -73,12 +35,12 @@ def platform_spark_etl(
     pg_database: str,
     warehouse_table: str,
     openlineage_url: str,
-    openlineage_namespace: str,
     aws_access_key: str,
     aws_secret_key: str,
 ) -> str:
     """PySpark ETL that reads CSV from MinIO, transforms, writes to PostgreSQL.
-    The OpenLineage Spark listener emits lineage events automatically."""
+    The OpenLineage Spark listener emits lineage events automatically.
+    OPENLINEAGE_NAMESPACE is injected by the Argo workflow controller."""
     import os
     import subprocess
 
@@ -89,7 +51,6 @@ def platform_spark_etl(
     os.environ["PG_DATABASE"] = pg_database
     os.environ["WAREHOUSE_TABLE"] = warehouse_table
     os.environ["OPENLINEAGE_URL"] = openlineage_url
-    os.environ["OPENLINEAGE_NAMESPACE"] = openlineage_namespace
     os.environ["AWS_ACCESS_KEY_ID"] = aws_access_key
     os.environ["AWS_SECRET_ACCESS_KEY"] = aws_secret_key
 
@@ -118,6 +79,7 @@ def platform_feast_apply(
     import os
     import subprocess
 
+    ol_namespace = os.environ.get("OPENLINEAGE_NAMESPACE", "default")
     fs_yaml = os.path.join(feast_repo_path, "feature_store.yaml")
     with open(fs_yaml, "w") as f:
         f.write(f"""\
@@ -143,11 +105,11 @@ openlineage:
   enabled: true
   transport_type: http
   transport_url: http://marquez
-  namespace: churn-demo
+  namespace: {ol_namespace}
   emit_on_apply: true
   emit_on_materialize: true
 """)
-    print(f"Patched {fs_yaml}")
+    print(f"Patched {fs_yaml} -> ol_ns={ol_namespace}")
 
     env = os.environ.copy()
     env["REDIS_PORT"] = "6379"
@@ -180,6 +142,7 @@ def platform_feast_materialize(
     from datetime import datetime, timedelta
     from feast import FeatureStore
 
+    ol_namespace = os.environ.get("OPENLINEAGE_NAMESPACE", "default")
     fs_yaml = os.path.join(feast_repo_path, "feature_store.yaml")
     with open(fs_yaml, "w") as f:
         f.write(f"""\
@@ -205,7 +168,7 @@ openlineage:
   enabled: true
   transport_type: http
   transport_url: http://marquez
-  namespace: churn-demo
+  namespace: {ol_namespace}
   emit_on_apply: true
   emit_on_materialize: true
 """)
@@ -238,6 +201,7 @@ def ds_data_extraction(
     from sqlalchemy import create_engine, text
     from feast import FeatureStore
 
+    ol_namespace = os.environ.get("OPENLINEAGE_NAMESPACE", "default")
     fs_yaml = os.path.join(feast_repo_path, "feature_store.yaml")
     with open(fs_yaml, "w") as f:
         f.write(f"""\
@@ -263,11 +227,11 @@ openlineage:
   enabled: true
   transport_type: http
   transport_url: http://marquez
-  namespace: churn-demo
+  namespace: {ol_namespace}
   emit_on_apply: true
   emit_on_materialize: true
 """)
-    print(f"Patched {fs_yaml} -> pg={pg_host}, redis={redis_host}")
+    print(f"Patched {fs_yaml} -> pg={pg_host}, redis={redis_host}, ol_ns={ol_namespace}")
 
     engine = create_engine(pg_url)
     with engine.connect() as conn:
@@ -307,192 +271,6 @@ openlineage:
     )
     print(f"DS: data extraction complete - shape {result.shape}")
     result.to_parquet(output_path.path)
-
-
-# =======================================================================
-# DS - Data Validation (Great Expectations + OpenLineage)
-# =======================================================================
-@dsl.component(base_image=FKM_IMAGE)
-def ds_data_validation(
-    dataset: dsl.Input[dsl.Dataset],
-    openlineage_url: str,
-    openlineage_namespace: str,
-    output_path: dsl.Output[dsl.Dataset],
-) -> None:
-    """Validate data quality with Great Expectations, emitting OpenLineage events."""
-    import json
-    import os
-    from datetime import datetime, timezone
-    from urllib.request import Request, urlopen
-    from uuid import uuid4
-
-    import numpy as np
-    import pandas as pd
-    import great_expectations as gx
-
-    df = pd.read_parquet(dataset.path)
-    print(f"Loaded {len(df)} rows for validation")
-
-    # -- Great Expectations validation ---------------------------------
-    context = gx.get_context()
-
-    data_source = context.data_sources.add_pandas(name="pipeline_data")
-    data_asset = data_source.add_dataframe_asset(name="customer_features")
-    batch_def = data_asset.add_batch_definition_whole_dataframe(
-        "validation_batch",
-    )
-
-    suite = gx.ExpectationSuite(name="customer_data_quality")
-
-    critical_cols = [
-        "entity_id", "event_timestamp", "tenure_months",
-        "monthly_charges", "total_charges", "num_support_tickets", "churn",
-    ]
-    for col in critical_cols:
-        suite.add_expectation(
-            gx.expectations.ExpectColumnToExist(column=col),
-        )
-        suite.add_expectation(
-            gx.expectations.ExpectColumnValuesToNotBeNull(
-                column=col, mostly=0.95,
-            ),
-        )
-
-    numeric_cols = [
-        "tenure_months", "monthly_charges", "total_charges",
-        "num_support_tickets",
-    ]
-    for col in numeric_cols:
-        suite.add_expectation(
-            gx.expectations.ExpectColumnValuesToBeBetween(
-                column=col, min_value=0, mostly=0.99,
-            ),
-        )
-
-    suite.add_expectation(
-        gx.expectations.ExpectColumnDistinctValuesToBeInSet(
-            column="churn", value_set=[0, 1],
-        ),
-    )
-
-    suite = context.suites.add(suite)
-
-    val_def = gx.ValidationDefinition(
-        data=batch_def,
-        suite=suite,
-        name="customer_validation",
-    )
-    val_def = context.validation_definitions.add(val_def)
-
-    checkpoint = gx.Checkpoint(
-        name="customer_checkpoint",
-        validation_definitions=[val_def],
-        actions=[],
-        result_format={"result_format": "SUMMARY"},
-    )
-    context.checkpoints.add(checkpoint)
-
-    result = checkpoint.run(batch_parameters={"dataframe": df})
-
-    evaluated = 0
-    successful = 0
-    unsuccessful = 0
-    if result.success:
-        print("All expectations passed.")
-    else:
-        print("WARNING: Some expectations failed. Proceeding with remediation.")
-
-    all_vr_results = []
-    for vr_key, vr in result.run_results.items():
-        vr_obj = vr if hasattr(vr, "statistics") else vr.get("validation_result", vr)
-        stats = vr_obj.statistics
-        evaluated += stats["evaluated_expectations"]
-        successful += stats["successful_expectations"]
-        unsuccessful += stats["unsuccessful_expectations"]
-        print(
-            f"  Evaluated: {stats['evaluated_expectations']}, "
-            f"Successful: {stats['successful_expectations']}, "
-            f"Unsuccessful: {stats['unsuccessful_expectations']}"
-        )
-        all_vr_results.append(vr_obj)
-
-    # -- Emit OpenLineage event with data quality facets ---------------
-    run_id = str(uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-
-    assertions = []
-    for vr_obj in all_vr_results:
-        for exp_result in vr_obj.results:
-            exp = exp_result.expectation_config
-            assertions.append({
-                "assertion": exp.type,
-                "success": exp_result.success,
-                "column": getattr(exp, "column", "") or exp.kwargs.get("column", ""),
-            })
-
-    dq_facet = {
-        "dataQualityAssertions": {
-            "_producer": "https://greatexpectations.io",
-            "_schemaURL": "https://openlineage.io/spec/facets/1-0-0/DataQualityAssertionsDatasetFacet.json",
-            "assertions": assertions,
-        }
-    }
-
-    for event_type in ("START", "COMPLETE"):
-        event = {
-            "eventType": event_type,
-            "eventTime": now,
-            "run": {"runId": run_id, "facets": {}},
-            "job": {
-                "namespace": openlineage_namespace,
-                "name": "validate_customer_data",
-                "facets": {},
-            },
-            "inputs": [
-                {
-                    "namespace": openlineage_namespace,
-                    "name": "customer_features_view",
-                    "facets": dq_facet if event_type == "COMPLETE" else {},
-                }
-            ],
-            "outputs": [
-                {
-                    "namespace": openlineage_namespace,
-                    "name": "customer_features_validated",
-                    "facets": {},
-                }
-            ],
-            "producer": "https://greatexpectations.io",
-            "schemaURL": "https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent",
-        }
-        body = json.dumps(event).encode("utf-8")
-        req = Request(
-            f"{openlineage_url}/api/v1/lineage",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urlopen(req) as resp:
-                print(f"OL event {event_type}: HTTP {resp.status}")
-        except Exception as e:
-            print(f"OL event {event_type} failed: {e}")
-
-    # -- Remediation: fill nulls so downstream steps don't fail --------
-    for col in critical_cols:
-        nulls = df[col].isna().sum()
-        if nulls > 0:
-            print(f"  Filling {nulls} nulls in {col}")
-            df[col] = df[col].fillna(0)
-
-    const_cols = df.select_dtypes(include=[np.number]).columns
-    for col in const_cols:
-        if df[col].nunique() <= 1:
-            print(f"  WARNING: {col} is constant")
-
-    print(f"DS: validation complete - {len(df)} rows, "
-          f"{evaluated} checks ({successful} passed, {unsuccessful} failed)")
-    df.to_parquet(output_path.path)
 
 
 # =======================================================================
@@ -543,6 +321,7 @@ def ds_model_training(
     import numpy as np
     import pandas as pd
     import xgboost as xgb
+    from openlineage_oai.adapters.mlflow.dataset_source import URIDatasetSource
     from sklearn.metrics import (
         f1_score, precision_score, recall_score, roc_auc_score,
     )
@@ -553,7 +332,8 @@ def ds_model_training(
     os.environ["AWS_ACCESS_KEY_ID"] = aws_key
     os.environ["AWS_SECRET_ACCESS_KEY"] = aws_secret
     os.environ["OPENLINEAGE_URL"] = "http://marquez"
-    os.environ["OPENLINEAGE_NAMESPACE"] = "churn-demo/customer_churn"
+    # OPENLINEAGE_NAMESPACE is injected by the Argo workflow controller
+    # via fieldRef: metadata.namespace -- no need to set it here.
 
     df = pd.read_parquet(dataset.path)
 
@@ -591,7 +371,7 @@ def ds_model_training(
     with mlflow.start_run() as run:
         dataset_source = f"postgresql://{pg_host}:5432/{pg_database}.public.customer_features"
         train_dataset = mlflow.data.from_pandas(
-            df, source=dataset_source, name="customer_features_view",
+            df, source=URIDatasetSource(dataset_source), name="customer_features_view",
         )
         mlflow.log_input(train_dataset, context="training")
 
@@ -700,8 +480,9 @@ def ds_model_registration(
     description=(
         "End-to-end churn prediction pipeline. "
         "PLATFORM steps: Spark ETL, Feast apply & materialize (managed by infra). "
-        "DS steps: data extraction, validation, feature engineering, "
-        "XGBoost training, evaluation, MLflow registration (owned by data scientists)."
+        "DS steps: data extraction, feature engineering, "
+        "XGBoost training, evaluation, MLflow registration (owned by data scientists). "
+        "OPENLINEAGE_NAMESPACE is injected by the Argo workflow controller."
     ),
 )
 def customer_churn_pipeline(
@@ -728,7 +509,6 @@ def customer_churn_pipeline(
         pg_database="warehouse",
         warehouse_table=table_name,
         openlineage_url="http://marquez",
-        openlineage_namespace="churn-demo/customer_churn",
         aws_access_key=aws_key,
         aws_secret_key=aws_secret,
     )
@@ -762,15 +542,8 @@ def customer_churn_pipeline(
     )
     extract_task.set_caching_options(False)
 
-    validate_task = ds_data_validation(
-        dataset=extract_task.outputs["output_path"],
-        openlineage_url="http://marquez",
-        openlineage_namespace="churn-demo/customer_churn",
-    )
-    validate_task.set_caching_options(False)
-
     engineer_task = ds_feature_engineering(
-        dataset=validate_task.outputs["output_path"],
+        dataset=extract_task.outputs["output_path"],
     )
     engineer_task.set_caching_options(False)
 

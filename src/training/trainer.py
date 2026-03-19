@@ -15,6 +15,7 @@ import os
 import mlflow
 import mlflow.data
 import mlflow.sklearn
+from openlineage_oai.adapters.mlflow.dataset_source import URIDatasetSource
 import numpy as np
 import pandas as pd
 import xgboost as xgb
@@ -121,7 +122,7 @@ def train_and_log(
             f"/{os.getenv('PG_DATABASE', 'warehouse')}.public.customer_features",
         )
         train_dataset = mlflow.data.from_pandas(
-            df, source=dataset_source, name="customer_features_view",
+            df, source=URIDatasetSource(dataset_source), name="customer_features_view",
         )
         mlflow.log_input(train_dataset, context="training")
 

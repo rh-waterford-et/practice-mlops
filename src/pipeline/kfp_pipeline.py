@@ -83,7 +83,7 @@ def platform_feast_apply(
     fs_yaml = os.path.join(feast_repo_path, "feature_store.yaml")
     with open(fs_yaml, "w") as f:
         f.write(f"""\
-project: customer_churn
+project: {ol_namespace}
 provider: local
 registry:
   registry_type: sql
@@ -105,7 +105,6 @@ openlineage:
   enabled: true
   transport_type: http
   transport_url: http://marquez
-  namespace: {ol_namespace}
   emit_on_apply: true
   emit_on_materialize: true
 """)
@@ -146,7 +145,7 @@ def platform_feast_materialize(
     fs_yaml = os.path.join(feast_repo_path, "feature_store.yaml")
     with open(fs_yaml, "w") as f:
         f.write(f"""\
-project: customer_churn
+project: {ol_namespace}
 provider: local
 registry:
   registry_type: sql
@@ -168,7 +167,6 @@ openlineage:
   enabled: true
   transport_type: http
   transport_url: http://marquez
-  namespace: {ol_namespace}
   emit_on_apply: true
   emit_on_materialize: true
 """)
@@ -205,7 +203,7 @@ def ds_data_extraction(
     fs_yaml = os.path.join(feast_repo_path, "feature_store.yaml")
     with open(fs_yaml, "w") as f:
         f.write(f"""\
-project: customer_churn
+project: {ol_namespace}
 provider: local
 registry:
   registry_type: sql
@@ -227,7 +225,6 @@ openlineage:
   enabled: true
   transport_type: http
   transport_url: http://marquez
-  namespace: {ol_namespace}
   emit_on_apply: true
   emit_on_materialize: true
 """)

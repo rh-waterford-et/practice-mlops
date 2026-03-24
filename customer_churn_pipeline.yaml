@@ -208,28 +208,27 @@ deploymentSpec:
           \ text\n    from feast import FeatureStore\n\n    ol_namespace = os.environ.get(\"\
           OPENLINEAGE_NAMESPACE\", \"default\")\n    fs_yaml = os.path.join(feast_repo_path,\
           \ \"feature_store.yaml\")\n    with open(fs_yaml, \"w\") as f:\n       \
-          \ f.write(f\"\"\"\\\nproject: customer_churn\nprovider: local\nregistry:\n\
+          \ f.write(f\"\"\"\\\nproject: {ol_namespace}\nprovider: local\nregistry:\n\
           \  registry_type: sql\n  path: postgresql://feast:feast@{pg_host}:5432/warehouse\n\
           \  cache_ttl_seconds: 60\noffline_store:\n  type: postgres\n  host: {pg_host}\n\
           \  port: 5432\n  database: warehouse\n  db_schema: public\n  user: feast\n\
           \  password: feast\nonline_store:\n  type: redis\n  connection_string: {redis_host}:6379\n\
           entity_key_serialization_version: 2\nopenlineage:\n  enabled: true\n  transport_type:\
-          \ http\n  transport_url: http://marquez\n  namespace: {ol_namespace}\n \
-          \ emit_on_apply: true\n  emit_on_materialize: true\n\"\"\")\n    print(f\"\
-          Patched {fs_yaml} -> pg={pg_host}, redis={redis_host}, ol_ns={ol_namespace}\"\
-          )\n\n    engine = create_engine(pg_url)\n    with engine.connect() as conn:\n\
-          \        entity_df = pd.read_sql(\n            text(f\"SELECT entity_id,\
-          \ event_timestamp, churn FROM {table_name}\"),\n            conn,\n    \
-          \    )\n    engine.dispose()\n    entity_df[\"event_timestamp\"] = pd.to_datetime(\n\
-          \        entity_df[\"event_timestamp\"], utc=True,\n    )\n\n    store =\
-          \ FeatureStore(repo_path=feast_repo_path)\n    features = [\n        \"\
-          customer_features_view:tenure_months\",\n        \"customer_features_view:monthly_charges\"\
-          ,\n        \"customer_features_view:total_charges\",\n        \"customer_features_view:num_support_tickets\"\
-          ,\n        \"customer_features_view:contract_type\",\n        \"customer_features_view:internet_service\"\
-          ,\n        \"customer_features_view:payment_method\",\n    ]\n    features_df\
-          \ = store.get_historical_features(\n        entity_df=entity_df[[\"entity_id\"\
-          , \"event_timestamp\"]],\n        features=features,\n    ).to_df()\n\n\
-          \    for df_ in (features_df, entity_df):\n        df_[\"event_timestamp\"\
+          \ http\n  transport_url: http://marquez\n  emit_on_apply: true\n  emit_on_materialize:\
+          \ true\n\"\"\")\n    print(f\"Patched {fs_yaml} -> pg={pg_host}, redis={redis_host},\
+          \ ol_ns={ol_namespace}\")\n\n    engine = create_engine(pg_url)\n    with\
+          \ engine.connect() as conn:\n        entity_df = pd.read_sql(\n        \
+          \    text(f\"SELECT entity_id, event_timestamp, churn FROM {table_name}\"\
+          ),\n            conn,\n        )\n    engine.dispose()\n    entity_df[\"\
+          event_timestamp\"] = pd.to_datetime(\n        entity_df[\"event_timestamp\"\
+          ], utc=True,\n    )\n\n    store = FeatureStore(repo_path=feast_repo_path)\n\
+          \    features = [\n        \"customer_features_view:tenure_months\",\n \
+          \       \"customer_features_view:monthly_charges\",\n        \"customer_features_view:total_charges\"\
+          ,\n        \"customer_features_view:num_support_tickets\",\n        \"customer_features_view:contract_type\"\
+          ,\n        \"customer_features_view:internet_service\",\n        \"customer_features_view:payment_method\"\
+          ,\n    ]\n    features_df = store.get_historical_features(\n        entity_df=entity_df[[\"\
+          entity_id\", \"event_timestamp\"]],\n        features=features,\n    ).to_df()\n\
+          \n    for df_ in (features_df, entity_df):\n        df_[\"event_timestamp\"\
           ] = pd.to_datetime(\n            df_[\"event_timestamp\"], utc=True,\n \
           \       )\n\n    result = features_df.merge(\n        entity_df[[\"entity_id\"\
           , \"event_timestamp\", \"churn\"]],\n        on=[\"entity_id\", \"event_timestamp\"\
@@ -464,20 +463,19 @@ deploymentSpec:
           \    import subprocess\n\n    ol_namespace = os.environ.get(\"OPENLINEAGE_NAMESPACE\"\
           , \"default\")\n    fs_yaml = os.path.join(feast_repo_path, \"feature_store.yaml\"\
           )\n    with open(fs_yaml, \"w\") as f:\n        f.write(f\"\"\"\\\nproject:\
-          \ customer_churn\nprovider: local\nregistry:\n  registry_type: sql\n  path:\
+          \ {ol_namespace}\nprovider: local\nregistry:\n  registry_type: sql\n  path:\
           \ postgresql://feast:feast@{pg_host}:5432/warehouse\n  cache_ttl_seconds:\
           \ 60\noffline_store:\n  type: postgres\n  host: {pg_host}\n  port: 5432\n\
           \  database: warehouse\n  db_schema: public\n  user: feast\n  password:\
           \ feast\nonline_store:\n  type: redis\n  connection_string: {redis_host}:6379\n\
           entity_key_serialization_version: 2\nopenlineage:\n  enabled: true\n  transport_type:\
-          \ http\n  transport_url: http://marquez\n  namespace: {ol_namespace}\n \
-          \ emit_on_apply: true\n  emit_on_materialize: true\n\"\"\")\n    print(f\"\
-          Patched {fs_yaml} -> ol_ns={ol_namespace}\")\n\n    env = os.environ.copy()\n\
-          \    env[\"REDIS_PORT\"] = \"6379\"\n    result = subprocess.run(\n    \
-          \    [\"feast\", \"apply\"],\n        cwd=feast_repo_path,\n        capture_output=True,\
-          \ text=True,\n        env=env,\n    )\n    print(result.stdout)\n    if\
-          \ result.returncode != 0:\n        print(f\"STDERR: {result.stderr}\")\n\
-          \        raise RuntimeError(f\"feast apply failed: {result.stderr[:500]}\"\
+          \ http\n  transport_url: http://marquez\n  emit_on_apply: true\n  emit_on_materialize:\
+          \ true\n\"\"\")\n    print(f\"Patched {fs_yaml} -> ol_ns={ol_namespace}\"\
+          )\n\n    env = os.environ.copy()\n    env[\"REDIS_PORT\"] = \"6379\"\n \
+          \   result = subprocess.run(\n        [\"feast\", \"apply\"],\n        cwd=feast_repo_path,\n\
+          \        capture_output=True, text=True,\n        env=env,\n    )\n    print(result.stdout)\n\
+          \    if result.returncode != 0:\n        print(f\"STDERR: {result.stderr}\"\
+          )\n        raise RuntimeError(f\"feast apply failed: {result.stderr[:500]}\"\
           )\n    print(\"Platform: feast apply succeeded\")\n    return \"applied\"\
           \n\n"
         image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
@@ -514,19 +512,18 @@ deploymentSpec:
           \ feast import FeatureStore\n\n    ol_namespace = os.environ.get(\"OPENLINEAGE_NAMESPACE\"\
           , \"default\")\n    fs_yaml = os.path.join(feast_repo_path, \"feature_store.yaml\"\
           )\n    with open(fs_yaml, \"w\") as f:\n        f.write(f\"\"\"\\\nproject:\
-          \ customer_churn\nprovider: local\nregistry:\n  registry_type: sql\n  path:\
+          \ {ol_namespace}\nprovider: local\nregistry:\n  registry_type: sql\n  path:\
           \ postgresql://feast:feast@{pg_host}:5432/warehouse\n  cache_ttl_seconds:\
           \ 60\noffline_store:\n  type: postgres\n  host: {pg_host}\n  port: 5432\n\
           \  database: warehouse\n  db_schema: public\n  user: feast\n  password:\
           \ feast\nonline_store:\n  type: redis\n  connection_string: {redis_host}:6379\n\
           entity_key_serialization_version: 2\nopenlineage:\n  enabled: true\n  transport_type:\
-          \ http\n  transport_url: http://marquez\n  namespace: {ol_namespace}\n \
-          \ emit_on_apply: true\n  emit_on_materialize: true\n\"\"\")\n\n    store\
-          \ = FeatureStore(repo_path=feast_repo_path)\n    end = datetime.utcnow()\n\
-          \    start = end - timedelta(days=1000)\n    print(f\"Materializing features\
-          \ {start.isoformat()} -> {end.isoformat()}\")\n    store.materialize(start_date=start,\
-          \ end_date=end)\n    print(\"Platform: feast materialize succeeded\")\n\
-          \    return \"materialized\"\n\n"
+          \ http\n  transport_url: http://marquez\n  emit_on_apply: true\n  emit_on_materialize:\
+          \ true\n\"\"\")\n\n    store = FeatureStore(repo_path=feast_repo_path)\n\
+          \    end = datetime.utcnow()\n    start = end - timedelta(days=1000)\n \
+          \   print(f\"Materializing features {start.isoformat()} -> {end.isoformat()}\"\
+          )\n    store.materialize(start_date=start, end_date=end)\n    print(\"Platform:\
+          \ feast materialize succeeded\")\n    return \"materialized\"\n\n"
         image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
     exec-platform-spark-etl:
       container:

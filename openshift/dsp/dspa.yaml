@@ -2,7 +2,7 @@ apiVersion: datasciencepipelinesapplications.opendatahub.io/v1
 kind: DataSciencePipelinesApplication
 metadata:
   name: dspa
-  namespace: fkm-test
+  namespace: lineage
   labels:
     app.kubernetes.io/part-of: feast-kfp-mlflow
 spec:
@@ -14,35 +14,36 @@ spec:
     enableOauth: true
     enableSamplePipeline: false
     pipelineStore: kubernetes
+    artifactSignedURLExpirySeconds: 60
 
-  # Use the built-in MariaDB for pipeline metadata
   database:
     disableHealthCheck: false
     mariaDB:
       deploy: true
       pipelineDBName: mlpipeline
-      pvcSize: 5Gi
+      pvcSize: 10Gi
       username: mlpipeline
 
-  # Point to our existing MinIO for pipeline artifact storage
   objectStorage:
     disableHealthCheck: false
     enableExternalRoute: false
     externalStorage:
       basePath: ""
       bucket: pipeline-artifacts
-      host: minio.fkm-test.svc.cluster.local
-      port: "9000"
+      host: mlflow-minio.lineage.svc:9000
+      port: ""
       region: us-east-1
       scheme: http
       s3CredentialsSecret:
         accessKey: AWS_ACCESS_KEY_ID
         secretKey: AWS_SECRET_ACCESS_KEY
-        secretName: dspa-s3-credentials
+        secretName: dashboard-dspa-secret
 
   persistenceAgent:
     deploy: true
     numWorkers: 2
+
+  podToPodTLS: true
 
   scheduledWorkflow:
     cronScheduleTimezone: UTC

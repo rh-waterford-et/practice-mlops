@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Quick status check for the fkm-test namespace
+# Quick status check for the lineage namespace
 set -euo pipefail
 
-NS="fkm-test"
+NS="lineage"
 
 echo "══════ PODS ══════"
 oc get pods -n "$NS" -o wide

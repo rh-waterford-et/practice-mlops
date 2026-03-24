@@ -1,0 +1,35 @@
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: dataset-registry-api
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: dataset-registry
+spec:
+  to:
+    kind: Service
+    name: dataset-registry-api
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: dataset-registry
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: dataset-registry
+spec:
+  to:
+    kind: Service
+    name: dataset-registry-ui
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

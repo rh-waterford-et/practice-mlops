@@ -1,0 +1,53 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ml-pipeline
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    stage: "05-ml-pipeline"
+spec:
+  backoffLimit: 4
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        job: ml-pipeline
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-mlflow
+          image: alpine:3
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for mlflow-server:5000 ..."
+              until nc -z mlflow-server 5000 2>/dev/null; do sleep 2; done
+              echo "MLflow is up"
+      containers:
+        - name: pipeline
+          image: fkm-app:latest
+          imagePullPolicy: Never
+          command: ["python3", "-m", "src.pipeline.run_pipeline"]
+          envFrom:
+            - configMapRef:
+                name: fkm-config
+            - secretRef:
+                name: fkm-credentials
+          volumeMounts:
+            - name: feast-config
+              mountPath: /app/src/feature_store/feature_store.yaml
+              subPath: feature_store.yaml
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+      volumes:
+        - name: feast-config
+          configMap:
+            name: feast-config

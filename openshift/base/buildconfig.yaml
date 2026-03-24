@@ -4,7 +4,7 @@ apiVersion: image.openshift.io/v1
 kind: ImageStream
 metadata:
   name: fkm-app
-  namespace: fkm-test
+  namespace: lineage
   labels:
     app.kubernetes.io/part-of: feast-kfp-mlflow
 
@@ -14,7 +14,7 @@ apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
   name: fkm-app
-  namespace: fkm-test
+  namespace: lineage
   labels:
     app.kubernetes.io/part-of: feast-kfp-mlflow
 spec:
@@ -30,22 +30,22 @@ spec:
       name: fkm-app:latest
 
 ---
-# ImageStream for the MLflow server
+# ImageStream for the Spark ETL image
 apiVersion: image.openshift.io/v1
 kind: ImageStream
 metadata:
-  name: mlflow-server
-  namespace: fkm-test
+  name: spark-etl
+  namespace: lineage
   labels:
     app.kubernetes.io/part-of: feast-kfp-mlflow
 
 ---
-# BuildConfig – builds from Dockerfile.mlflow
+# BuildConfig – builds from the repo root using Dockerfile.spark
 apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
-  name: mlflow-server
-  namespace: fkm-test
+  name: spark-etl
+  namespace: lineage
   labels:
     app.kubernetes.io/part-of: feast-kfp-mlflow
 spec:
@@ -54,8 +54,12 @@ spec:
   strategy:
     type: Docker
     dockerStrategy:
-      dockerfilePath: Dockerfile.mlflow
+      dockerfilePath: Dockerfile.spark
   output:
     to:
       kind: ImageStreamTag
-      name: mlflow-server:latest
+      name: spark-etl:latest
+  resources:
+    limits:
+      cpu: "2"
+      memory: 4Gi

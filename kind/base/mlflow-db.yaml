@@ -1,0 +1,122 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlflow-db-pvc
+  namespace: lineage
+  labels:
+    app: mlflow-db
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mlflow-db-secret
+  namespace: lineage
+  labels:
+    app: mlflow-db
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+type: Opaque
+stringData:
+  POSTGRES_USER: "mlflow"
+  POSTGRES_PASSWORD: "mlflow123"
+  POSTGRES_DB: "mlflow"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow-db
+  namespace: lineage
+  labels:
+    app: mlflow-db
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow-db
+  template:
+    metadata:
+      labels:
+        app: mlflow-db
+    spec:
+      containers:
+        - name: postgresql
+          # Standard postgres:15 image (no Red Hat registry auth needed)
+          image: postgres:15
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-db-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-db-secret
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-db-secret
+                  key: POSTGRES_DB
+          volumeMounts:
+            - name: db-data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - mlflow
+                - -d
+                - mlflow
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - mlflow
+                - -d
+                - mlflow
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: db-data
+          persistentVolumeClaim:
+            claimName: mlflow-db-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-db
+  namespace: lineage
+  labels:
+    app: mlflow-db
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  selector:
+    app: mlflow-db
+  ports:
+    - port: 5432
+      targetPort: 5432

@@ -1,0 +1,53 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: feast-materialize
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    stage: "04-feast-materialize"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        job: feast-materialize
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-redis
+          image: alpine:3
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for redis:6379 ..."
+              until nc -z redis 6379 2>/dev/null; do sleep 2; done
+              echo "Redis is up"
+      containers:
+        - name: feast-materialize
+          image: fkm-app:latest
+          imagePullPolicy: Never
+          command: ["python3", "-m", "src.feature_store.feast_workflow", "materialize"]
+          envFrom:
+            - configMapRef:
+                name: fkm-config
+            - secretRef:
+                name: fkm-credentials
+          volumeMounts:
+            - name: feast-config
+              mountPath: /app/src/feature_store/feature_store.yaml
+              subPath: feature_store.yaml
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: feast-config
+          configMap:
+            name: feast-config

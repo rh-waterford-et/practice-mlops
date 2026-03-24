@@ -1,0 +1,28 @@
+# Patch for the DSPA-managed Argo workflow controller ConfigMap.
+#
+# This adds a mainContainer section that injects OPENLINEAGE_NAMESPACE
+# into every pipeline pod via the Kubernetes Downward API.
+# The value is the pod's own namespace (metadata.namespace).
+#
+# Apply with:
+#   kubectl patch configmap ds-pipeline-workflow-controller-dspa \
+#     -n lineage --type merge --patch-file workflow-controller-patch.yaml
+#
+# Then restart the controller:
+#   kubectl rollout restart deployment/ds-pipeline-workflow-controller-dspa -n lineage
+#
+# NOTE: This ConfigMap is owned by the DSPA operator and may be
+# overwritten if the DSPA CR is reapplied. See namespace-injection.md
+# for production alternatives.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ds-pipeline-workflow-controller-dspa
+  namespace: lineage
+data:
+  mainContainer: |
+    env:
+      - name: OPENLINEAGE_NAMESPACE
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.namespace

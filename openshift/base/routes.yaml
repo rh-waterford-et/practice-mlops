@@ -4,7 +4,7 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: inference-api
-  namespace: fkm-test
+  namespace: lineage
   labels:
     app: inference-api
     app.kubernetes.io/part-of: feast-kfp-mlflow
@@ -23,37 +23,65 @@ spec:
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
-  name: mlflow
-  namespace: fkm-test
+  name: mlflow-server
+  namespace: lineage
   labels:
-    app: mlflow
+    app: mlflow-server
     app.kubernetes.io/part-of: feast-kfp-mlflow
 spec:
   to:
     kind: Service
-    name: mlflow
+    name: mlflow-server
   port:
     targetPort: 5000
-  tls:
-    termination: edge
-    insecureEdgeTerminationPolicy: Redirect
 
 ---
 # Expose MinIO console externally
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
-  name: minio-console
-  namespace: fkm-test
+  name: mlflow-minio-console
+  namespace: lineage
   labels:
-    app: minio
+    app: mlflow-minio
     app.kubernetes.io/part-of: feast-kfp-mlflow
 spec:
   to:
     kind: Service
-    name: minio
+    name: mlflow-minio
   port:
     targetPort: 9001
-  tls:
-    termination: edge
-    insecureEdgeTerminationPolicy: Redirect
+
+---
+# Expose Marquez API externally
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: marquez
+  namespace: lineage
+  labels:
+    app.kubernetes.io/component: marquez
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  to:
+    kind: Service
+    name: marquez
+  port:
+    targetPort: http
+
+---
+# Expose Marquez Web UI externally
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: marquez-web
+  namespace: lineage
+  labels:
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  to:
+    kind: Service
+    name: marquez-web
+  port:
+    targetPort: http

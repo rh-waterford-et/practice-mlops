@@ -1,0 +1,5 @@
+fastapi>=0.115.0,<1
+uvicorn>=0.32.0,<1
+psycopg2-binary>=2.9.9,<3
+pydantic>=2.6.0,<3
+boto3

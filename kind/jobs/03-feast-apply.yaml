@@ -1,0 +1,61 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: feast-apply
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    stage: "03-feast-apply"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        job: feast-apply
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-postgres
+          image: alpine:3
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for postgres:5432 ..."
+              until nc -z postgres 5432 2>/dev/null; do sleep 2; done
+              echo "PostgreSQL is up"
+      containers:
+        - name: feast-apply
+          image: fkm-app:latest
+          imagePullPolicy: Never
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              echo "=== Running feast apply ==="
+              cd /app/src/feature_store
+              feast apply
+              echo "=== feast apply complete ==="
+          envFrom:
+            - configMapRef:
+                name: fkm-config
+            - secretRef:
+                name: fkm-credentials
+          volumeMounts:
+            - name: feast-config
+              mountPath: /app/src/feature_store/feature_store.yaml
+              subPath: feature_store.yaml
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: feast-config
+          configMap:
+            name: feast-config

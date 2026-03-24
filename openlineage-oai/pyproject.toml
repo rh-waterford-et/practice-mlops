@@ -1,0 +1,136 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openlineage-oai"
+version = "0.1.0"
+description = "Unified OpenLineage client for OpenShift AI (MLflow, Ray, KFP, LlamaStack)"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Lineage Team"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+keywords = ["openlineage", "openshift-ai", "mlflow", "lineage", "data-lineage", "ml-ops"]
+
+# Core dependencies - minimal for the base package
+dependencies = [
+    "requests>=2.28.0",
+]
+
+[project.optional-dependencies]
+# MLflow adapter
+mlflow = [
+    "mlflow>=2.0.0",
+]
+
+# LlamaStack adapter (future)
+llamastack = [
+    "llama-stack>=0.1.0",
+]
+
+# All adapters (for convenience)
+all = [
+    "mlflow>=2.0.0",
+    # Future: ray, kfp, llamastack
+]
+
+# Development dependencies
+dev = [
+    "pytest>=7.0.0",
+    "pytest-mock>=3.10.0",
+    "pytest-cov>=4.0.0",
+    "responses>=0.23.0",
+    "mlflow>=2.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-org/openlineage-oai"
+Documentation = "https://github.com/your-org/openlineage-oai#readme"
+Repository = "https://github.com/your-org/openlineage-oai"
+
+# MLflow tracking store plugin entry points
+# Register for each backend type we support (MLflow parses "openlineage+http" as a single scheme)
+[project.entry-points."mlflow.tracking_store"]
+openlineage = "openlineage_oai.adapters.mlflow.tracking_store:OpenLineageTrackingStore"
+"openlineage+http" = "openlineage_oai.adapters.mlflow.tracking_store:OpenLineageTrackingStore"
+"openlineage+https" = "openlineage_oai.adapters.mlflow.tracking_store:OpenLineageTrackingStore"
+"openlineage+postgresql" = "openlineage_oai.adapters.mlflow.tracking_store:OpenLineageTrackingStore"
+"openlineage+mysql" = "openlineage_oai.adapters.mlflow.tracking_store:OpenLineageTrackingStore"
+"openlineage+sqlite" = "openlineage_oai.adapters.mlflow.tracking_store:OpenLineageTrackingStore"
+"openlineage+file" = "openlineage_oai.adapters.mlflow.tracking_store:OpenLineageTrackingStore"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["openlineage_oai*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "unit: Unit tests (fast, no external dependencies)",
+    "integration: Integration tests (may require external services)",
+    "slow: Slow tests",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort (import sorting)
+    "B",    # flake8-bugbear (common bugs)
+    "UP",   # pyupgrade (modern Python)
+    "SIM",  # flake8-simplify
+]
+ignore = [
+    "E501",   # Line length (handled by formatter)
+    "B008",   # Function call in default argument (common in FastAPI)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["openlineage_oai"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["SIM117"]  # Allow nested with statements in test fixtures
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["openlineage_oai"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

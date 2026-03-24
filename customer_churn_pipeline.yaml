@@ -1,25 +1,27 @@
 # PIPELINE DEFINITION
 # Name: customer-churn-ml-pipeline
-# Description: End-to-end: Feast extraction, Validation, Feature engineering, XGBoost training, Evaluation, MLflow registration
+# Description: End-to-end churn prediction pipeline. PLATFORM steps: Spark ETL, Feast apply & materialize (managed by infra). DS steps: data extraction, feature engineering, XGBoost training, evaluation, MLflow registration (owned by data scientists). OPENLINEAGE_NAMESPACE is injected by the Argo workflow controller.
 # Inputs:
 #    aws_key: str [Default: 'minioadmin']
-#    aws_secret: str [Default: 'minioadmin']
-#    experiment_name: str [Default: 'customer_churn']
+#    aws_secret: str [Default: 'minioadmin123']
+#    experiment_name: str [Default: 'customer_churn_lineage']
 #    feast_repo_path: str [Default: '/app/src/feature_store']
 #    model_name: str [Default: 'customer_churn_model']
-#    pg_host: str [Default: 'postgres.fkm-test.svc.cluster.local']
-#    pg_url: str [Default: 'postgresql://feast:feast@postgres.fkm-test.svc.cluster.local:5432/warehouse']
-#    redis_host: str [Default: 'redis.fkm-test.svc.cluster.local']
+#    pg_host: str [Default: 'postgres']
+#    pg_url: str [Default: 'postgresql://feast:feast@postgres:5432/warehouse']
+#    redis_host: str [Default: 'redis']
 #    roc_auc_threshold: float [Default: 0.7]
-#    s3_endpoint: str [Default: 'http://minio.fkm-test.svc.cluster.local:9000']
+#    s3_endpoint: str [Default: 'http://mlflow-minio:9000']
 #    table_name: str [Default: 'customer_features']
-#    tracking_uri: str [Default: 'http://mlflow.fkm-test.svc.cluster.local:5000']
+#    tracking_uri: str [Default: 'openlineage+http://mlflow-server:5000']
 components:
-  comp-step1-data-extraction:
-    executorLabel: exec-step1-data-extraction
+  comp-ds-data-extraction:
+    executorLabel: exec-ds-data-extraction
     inputDefinitions:
       parameters:
         feast_repo_path:
+          parameterType: STRING
+        materialize_done:
           parameterType: STRING
         pg_host:
           parameterType: STRING
@@ -35,59 +37,8 @@ components:
           artifactType:
             schemaTitle: system.Dataset
             schemaVersion: 0.0.1
-  comp-step2-data-validation:
-    executorLabel: exec-step2-data-validation
-    inputDefinitions:
-      artifacts:
-        dataset:
-          artifactType:
-            schemaTitle: system.Dataset
-            schemaVersion: 0.0.1
-    outputDefinitions:
-      artifacts:
-        output_path:
-          artifactType:
-            schemaTitle: system.Dataset
-            schemaVersion: 0.0.1
-  comp-step3-feature-engineering:
-    executorLabel: exec-step3-feature-engineering
-    inputDefinitions:
-      artifacts:
-        dataset:
-          artifactType:
-            schemaTitle: system.Dataset
-            schemaVersion: 0.0.1
-    outputDefinitions:
-      artifacts:
-        output_path:
-          artifactType:
-            schemaTitle: system.Dataset
-            schemaVersion: 0.0.1
-  comp-step4-model-training:
-    executorLabel: exec-step4-model-training
-    inputDefinitions:
-      artifacts:
-        dataset:
-          artifactType:
-            schemaTitle: system.Dataset
-            schemaVersion: 0.0.1
-      parameters:
-        aws_key:
-          parameterType: STRING
-        aws_secret:
-          parameterType: STRING
-        experiment_name:
-          parameterType: STRING
-        s3_endpoint:
-          parameterType: STRING
-        tracking_uri:
-          parameterType: STRING
-    outputDefinitions:
-      parameters:
-        Output:
-          parameterType: STRING
-  comp-step5-evaluation:
-    executorLabel: exec-step5-evaluation
+  comp-ds-evaluation:
+    executorLabel: exec-ds-evaluation
     inputDefinitions:
       parameters:
         train_result_json:
@@ -96,8 +47,22 @@ components:
       parameters:
         Output:
           parameterType: STRING
-  comp-step6-model-registration:
-    executorLabel: exec-step6-model-registration
+  comp-ds-feature-engineering:
+    executorLabel: exec-ds-feature-engineering
+    inputDefinitions:
+      artifacts:
+        dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        output_path:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-ds-model-registration:
+    executorLabel: exec-ds-model-registration
     inputDefinitions:
       parameters:
         aws_key:
@@ -120,15 +85,102 @@ components:
       parameters:
         Output:
           parameterType: STRING
+  comp-ds-model-training:
+    executorLabel: exec-ds-model-training
+    inputDefinitions:
+      artifacts:
+        dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        aws_key:
+          parameterType: STRING
+        aws_secret:
+          parameterType: STRING
+        experiment_name:
+          parameterType: STRING
+        pg_database:
+          defaultValue: warehouse
+          isOptional: true
+          parameterType: STRING
+        pg_host:
+          defaultValue: postgres
+          isOptional: true
+          parameterType: STRING
+        s3_endpoint:
+          parameterType: STRING
+        tracking_uri:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-platform-feast-apply:
+    executorLabel: exec-platform-feast-apply
+    inputDefinitions:
+      parameters:
+        feast_repo_path:
+          parameterType: STRING
+        pg_host:
+          parameterType: STRING
+        redis_host:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-platform-feast-materialize:
+    executorLabel: exec-platform-feast-materialize
+    inputDefinitions:
+      parameters:
+        apply_done:
+          parameterType: STRING
+        feast_repo_path:
+          parameterType: STRING
+        pg_host:
+          parameterType: STRING
+        redis_host:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-platform-spark-etl:
+    executorLabel: exec-platform-spark-etl
+    inputDefinitions:
+      parameters:
+        aws_access_key:
+          parameterType: STRING
+        aws_secret_key:
+          parameterType: STRING
+        minio_endpoint:
+          parameterType: STRING
+        openlineage_url:
+          parameterType: STRING
+        pg_database:
+          parameterType: STRING
+        pg_host:
+          parameterType: STRING
+        pg_password:
+          parameterType: STRING
+        pg_user:
+          parameterType: STRING
+        warehouse_table:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
 deploymentSpec:
   executors:
-    exec-step1-data-extraction:
+    exec-ds-data-extraction:
       container:
         args:
         - --executor_input
         - '{{$}}'
         - --function_to_execute
-        - step1_data_extraction
+        - ds_data_extraction
         command:
         - sh
         - -c
@@ -148,23 +200,25 @@ deploymentSpec:
 
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef step1_data_extraction(\n    pg_url: str,\n    feast_repo_path:\
-          \ str,\n    table_name: str,\n    pg_host: str,\n    redis_host: str,\n\
-          \    output_path: dsl.Output[dsl.Dataset],\n) -> None:\n    \"\"\"Retrieve\
-          \ historical features from Feast and save as parquet.\"\"\"\n    import\
-          \ os\n    import pandas as pd\n    from sqlalchemy import create_engine,\
-          \ text\n    from feast import FeatureStore\n\n    # Patch feature_store.yaml\
-          \ so Feast points at in-cluster services\n    fs_yaml = os.path.join(feast_repo_path,\
+          \ *\n\ndef ds_data_extraction(\n    pg_url: str,\n    feast_repo_path: str,\n\
+          \    table_name: str,\n    pg_host: str,\n    redis_host: str,\n    materialize_done:\
+          \ str,\n    output_path: dsl.Output[dsl.Dataset],\n) -> None:\n    \"\"\"\
+          Retrieve historical features from Feast and save as parquet.\"\"\"\n   \
+          \ import os\n    import pandas as pd\n    from sqlalchemy import create_engine,\
+          \ text\n    from feast import FeatureStore\n\n    ol_namespace = os.environ.get(\"\
+          OPENLINEAGE_NAMESPACE\", \"default\")\n    fs_yaml = os.path.join(feast_repo_path,\
           \ \"feature_store.yaml\")\n    with open(fs_yaml, \"w\") as f:\n       \
-          \ f.write(f\"\"\"\\\nproject: customer_churn\nprovider: local\nregistry:\n\
+          \ f.write(f\"\"\"\\\nproject: {ol_namespace}\nprovider: local\nregistry:\n\
           \  registry_type: sql\n  path: postgresql://feast:feast@{pg_host}:5432/warehouse\n\
           \  cache_ttl_seconds: 60\noffline_store:\n  type: postgres\n  host: {pg_host}\n\
           \  port: 5432\n  database: warehouse\n  db_schema: public\n  user: feast\n\
           \  password: feast\nonline_store:\n  type: redis\n  connection_string: {redis_host}:6379\n\
-          entity_key_serialization_version: 2\n\"\"\")\n    print(f\"Patched {fs_yaml}\
-          \ -> pg={pg_host}, redis={redis_host}\")\n\n    engine = create_engine(pg_url)\n\
-          \    with engine.connect() as conn:\n        entity_df = pd.read_sql(\n\
-          \            text(f\"SELECT entity_id, event_timestamp, churn FROM {table_name}\"\
+          entity_key_serialization_version: 2\nopenlineage:\n  enabled: true\n  transport_type:\
+          \ http\n  transport_url: http://marquez\n  emit_on_apply: true\n  emit_on_materialize:\
+          \ true\n\"\"\")\n    print(f\"Patched {fs_yaml} -> pg={pg_host}, redis={redis_host},\
+          \ ol_ns={ol_namespace}\")\n\n    engine = create_engine(pg_url)\n    with\
+          \ engine.connect() as conn:\n        entity_df = pd.read_sql(\n        \
+          \    text(f\"SELECT entity_id, event_timestamp, churn FROM {table_name}\"\
           ),\n            conn,\n        )\n    engine.dispose()\n    entity_df[\"\
           event_timestamp\"] = pd.to_datetime(\n        entity_df[\"event_timestamp\"\
           ], utc=True,\n    )\n\n    store = FeatureStore(repo_path=feast_repo_path)\n\
@@ -178,16 +232,16 @@ deploymentSpec:
           ] = pd.to_datetime(\n            df_[\"event_timestamp\"], utc=True,\n \
           \       )\n\n    result = features_df.merge(\n        entity_df[[\"entity_id\"\
           , \"event_timestamp\", \"churn\"]],\n        on=[\"entity_id\", \"event_timestamp\"\
-          ],\n        how=\"left\",\n    )\n    print(f\"Step 1 complete - shape {result.shape}\"\
-          )\n    result.to_parquet(output_path.path)\n\n"
-        image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
-    exec-step2-data-validation:
+          ],\n        how=\"left\",\n    )\n    print(f\"DS: data extraction complete\
+          \ - shape {result.shape}\")\n    result.to_parquet(output_path.path)\n\n"
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-ds-evaluation:
       container:
         args:
         - --executor_input
         - '{{$}}'
         - --function_to_execute
-        - step2_data_validation
+        - ds_evaluation
         command:
         - sh
         - -c
@@ -207,27 +261,20 @@ deploymentSpec:
 
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef step2_data_validation(\n    dataset: dsl.Input[dsl.Dataset],\n\
-          \    output_path: dsl.Output[dsl.Dataset],\n) -> None:\n    \"\"\"Validate\
-          \ schema, nulls, distributions.\"\"\"\n    import numpy as np\n    import\
-          \ pandas as pd\n\n    df = pd.read_parquet(dataset.path)\n\n    critical_cols\
-          \ = [\n        \"entity_id\", \"event_timestamp\", \"tenure_months\",\n\
-          \        \"monthly_charges\", \"total_charges\", \"num_support_tickets\"\
-          , \"churn\",\n    ]\n    for col in critical_cols:\n        nulls = df[col].isna().sum()\n\
-          \        if nulls > 0:\n            print(f\"  Filling {nulls} nulls in\
-          \ {col}\")\n            df[col] = df[col].fillna(0)\n\n    numeric_cols\
-          \ = df.select_dtypes(include=[np.number]).columns\n    for col in numeric_cols:\n\
-          \        if df[col].nunique() <= 1:\n            print(f\"  WARNING: {col}\
-          \ is constant\")\n\n    print(f\"Step 2 complete \u2013 {len(df)} rows validated\"\
-          )\n    df.to_parquet(output_path.path)\n\n"
-        image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
-    exec-step3-feature-engineering:
+          \ *\n\ndef ds_evaluation(train_result_json: str) -> str:\n    \"\"\"Display\
+          \ and return evaluation metrics.\"\"\"\n    import json\n\n    result =\
+          \ json.loads(train_result_json)\n    m = result[\"metrics\"]\n    print(\n\
+          \        f\"DS: evaluation  ROC-AUC={m['roc_auc']:.4f}  F1={m['f1']:.4f}\
+          \  \"\n        f\"Precision={m['precision']:.4f}  Recall={m['recall']:.4f}\"\
+          \n    )\n    return json.dumps(m)\n\n"
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-ds-feature-engineering:
       container:
         args:
         - --executor_input
         - '{{$}}'
         - --function_to_execute
-        - step3_feature_engineering
+        - ds_feature_engineering
         command:
         - sh
         - -c
@@ -247,23 +294,24 @@ deploymentSpec:
 
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef step3_feature_engineering(\n    dataset: dsl.Input[dsl.Dataset],\n\
+          \ *\n\ndef ds_feature_engineering(\n    dataset: dsl.Input[dsl.Dataset],\n\
           \    output_path: dsl.Output[dsl.Dataset],\n) -> None:\n    \"\"\"Add derived\
           \ features.\"\"\"\n    import numpy as np\n    import pandas as pd\n\n \
           \   df = pd.read_parquet(dataset.path)\n    tenure_safe = df[\"tenure_months\"\
           ].replace(0, 1)\n    df[\"charges_per_month\"] = df[\"total_charges\"] /\
           \ tenure_safe\n    df[\"ticket_rate\"] = df[\"num_support_tickets\"] / tenure_safe\n\
           \n    for col in [\"charges_per_month\", \"ticket_rate\"]:\n        df[col]\
-          \ = df[col].replace([np.inf, -np.inf], 0.0)\n\n    print(f\"Step 3 complete\
-          \ \u2013 shape {df.shape}\")\n    df.to_parquet(output_path.path)\n\n"
-        image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
-    exec-step4-model-training:
+          \ = df[col].replace([np.inf, -np.inf], 0.0)\n\n    print(f\"DS: feature\
+          \ engineering complete - shape {df.shape}\")\n    df.to_parquet(output_path.path)\n\
+          \n"
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-ds-model-registration:
       container:
         args:
         - --executor_input
         - '{{$}}'
         - --function_to_execute
-        - step4_model_training
+        - ds_model_registration
         command:
         - sh
         - -c
@@ -283,137 +331,269 @@ deploymentSpec:
 
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef step4_model_training(\n    dataset: dsl.Input[dsl.Dataset],\n\
-          \    tracking_uri: str,\n    experiment_name: str,\n    s3_endpoint: str,\n\
-          \    aws_key: str,\n    aws_secret: str,\n) -> str:\n    \"\"\"Train XGBoost,\
-          \ log to MLflow. Returns JSON with run_id, model_uri, metrics.\"\"\"\n \
-          \   import json\n    import os\n\n    import mlflow\n    import mlflow.sklearn\n\
-          \    import numpy as np\n    import pandas as pd\n    import xgboost as\
-          \ xgb\n    from sklearn.metrics import (\n        f1_score, precision_score,\
-          \ recall_score, roc_auc_score,\n    )\n    from sklearn.model_selection\
-          \ import train_test_split\n    from sklearn.preprocessing import LabelEncoder\n\
-          \n    os.environ[\"MLFLOW_S3_ENDPOINT_URL\"] = s3_endpoint\n    os.environ[\"\
-          AWS_ACCESS_KEY_ID\"] = aws_key\n    os.environ[\"AWS_SECRET_ACCESS_KEY\"\
-          ] = aws_secret\n\n    df = pd.read_parquet(dataset.path)\n\n    cat_cols\
-          \ = [\"contract_type\", \"internet_service\", \"payment_method\"]\n    for\
-          \ col in cat_cols:\n        df[col] = LabelEncoder().fit_transform(df[col].astype(str))\n\
-          \n    feature_cols = [\n        \"tenure_months\", \"monthly_charges\",\
-          \ \"total_charges\",\n        \"num_support_tickets\", \"contract_type\"\
-          , \"internet_service\",\n        \"payment_method\",\n    ]\n    X = df[feature_cols].values.astype(np.float32)\n\
-          \    y = df[\"churn\"].values.astype(np.int32)\n\n    X_train, X_test, y_train,\
-          \ y_test = train_test_split(\n        X, y, test_size=0.2, random_state=42,\
-          \ stratify=y,\n    )\n\n    params = {\n        \"max_depth\": 6,\n    \
-          \    \"learning_rate\": 0.1,\n        \"n_estimators\": 200,\n        \"\
-          objective\": \"binary:logistic\",\n        \"eval_metric\": \"logloss\"\
-          ,\n        \"seed\": 42,\n    }\n\n    mlflow.set_tracking_uri(tracking_uri)\n\
-          \    mlflow.set_experiment(experiment_name)\n\n    with mlflow.start_run()\
-          \ as run:\n        mlflow.log_params(params)\n\n        model = xgb.XGBClassifier(**params)\n\
-          \        model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)\n\
-          \n        y_pred = model.predict(X_test)\n        y_prob = model.predict_proba(X_test)[:,\
-          \ 1]\n\n        metrics = {\n            \"roc_auc\": float(roc_auc_score(y_test,\
-          \ y_prob)),\n            \"f1\": float(f1_score(y_test, y_pred)),\n    \
-          \        \"precision\": float(precision_score(y_test, y_pred)),\n      \
-          \      \"recall\": float(recall_score(y_test, y_pred)),\n        }\n   \
-          \     mlflow.log_metrics(metrics)\n\n        info = mlflow.sklearn.log_model(model,\
-          \ artifact_path=\"model\")\n\n        print(f\"Step 4 complete \u2013 metrics:\
-          \ {metrics}\")\n        return json.dumps({\n            \"run_id\": run.info.run_id,\n\
-          \            \"model_uri\": info.model_uri,\n            \"metrics\": metrics,\n\
-          \        })\n\n"
-        image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
-    exec-step5-evaluation:
-      container:
-        args:
-        - --executor_input
-        - '{{$}}'
-        - --function_to_execute
-        - step5_evaluation
-        command:
-        - sh
-        - -c
-        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
-          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
-          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
-          $0\" \"$@\"\n"
-        - sh
-        - -ec
-        - 'program_path=$(mktemp -d)
-
-
-          printf "%s" "$0" > "$program_path/ephemeral_component.py"
-
-          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
-
-          '
-        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef step5_evaluation(train_result_json: str) -> str:\n    \"\"\"\
-          Display and return evaluation metrics.\"\"\"\n    import json\n\n    result\
-          \ = json.loads(train_result_json)\n    m = result[\"metrics\"]\n    print(\n\
-          \        f\"Step 5  ROC-AUC={m['roc_auc']:.4f}  F1={m['f1']:.4f}  \"\n \
-          \       f\"Precision={m['precision']:.4f}  Recall={m['recall']:.4f}\"\n\
-          \    )\n    return json.dumps(m)\n\n"
-        image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
-    exec-step6-model-registration:
-      container:
-        args:
-        - --executor_input
-        - '{{$}}'
-        - --function_to_execute
-        - step6_model_registration
-        command:
-        - sh
-        - -c
-        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
-          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
-          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
-          $0\" \"$@\"\n"
-        - sh
-        - -ec
-        - 'program_path=$(mktemp -d)
-
-
-          printf "%s" "$0" > "$program_path/ephemeral_component.py"
-
-          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
-
-          '
-        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef step6_model_registration(\n    train_result_json: str,\n    metrics_json:\
+          \ *\n\ndef ds_model_registration(\n    train_result_json: str,\n    metrics_json:\
           \ str,\n    model_name: str,\n    tracking_uri: str,\n    s3_endpoint: str,\n\
           \    aws_key: str,\n    aws_secret: str,\n    roc_auc_threshold: float,\n\
           ) -> str:\n    \"\"\"Register model in MLflow if metrics beat the threshold.\"\
           \"\"\n    import json\n    import os\n\n    import mlflow\n    from mlflow.tracking\
           \ import MlflowClient\n\n    os.environ[\"MLFLOW_S3_ENDPOINT_URL\"] = s3_endpoint\n\
           \    os.environ[\"AWS_ACCESS_KEY_ID\"] = aws_key\n    os.environ[\"AWS_SECRET_ACCESS_KEY\"\
-          ] = aws_secret\n\n    result = json.loads(train_result_json)\n    metrics\
-          \ = json.loads(metrics_json)\n\n    if metrics[\"roc_auc\"] < roc_auc_threshold:\n\
-          \        print(f\"Step 6  ROC-AUC {metrics['roc_auc']:.4f} < {roc_auc_threshold}\
-          \ \u2013 skipping\")\n        return json.dumps({\"registered\": False,\
-          \ \"reason\": \"below_threshold\"})\n\n    mlflow.set_tracking_uri(tracking_uri)\n\
-          \    mv = mlflow.register_model(model_uri=result[\"model_uri\"], name=model_name)\n\
-          \    client = MlflowClient()\n    client.set_registered_model_alias(model_name,\
-          \ \"champion\", str(mv.version))\n\n    print(f\"Step 6  Registered {model_name}\
-          \ v{mv.version} as alias 'champion'\")\n    return json.dumps({\n      \
-          \  \"registered\": True,\n        \"model_name\": model_name,\n        \"\
-          version\": int(mv.version),\n        \"alias\": \"champion\",\n    })\n\n"
-        image: image-registry.openshift-image-registry.svc:5000/fkm-test/fkm-app:latest
+          ] = aws_secret\n\n    # The model registry doesn't have an openlineage+\
+          \ scheme plugin,\n    # so point it at the plain MLflow server URL directly.\n\
+          \    plain_uri = tracking_uri.replace(\"openlineage+\", \"\")\n    os.environ[\"\
+          MLFLOW_REGISTRY_URI\"] = plain_uri\n\n    result = json.loads(train_result_json)\n\
+          \    metrics = json.loads(metrics_json)\n\n    if metrics[\"roc_auc\"] <\
+          \ roc_auc_threshold:\n        print(f\"DS: model registration  ROC-AUC {metrics['roc_auc']:.4f}\
+          \ < {roc_auc_threshold} - skipping\")\n        return json.dumps({\"registered\"\
+          : False, \"reason\": \"below_threshold\"})\n\n    mlflow.set_tracking_uri(tracking_uri)\n\
+          \    try:\n        mv = mlflow.register_model(model_uri=result[\"model_uri\"\
+          ], name=model_name)\n        client = MlflowClient()\n        client.set_registered_model_alias(model_name,\
+          \ \"champion\", str(mv.version))\n        print(f\"DS: registered {model_name}\
+          \ v{mv.version} as alias 'champion'\")\n        return json.dumps({\n  \
+          \          \"registered\": True,\n            \"model_name\": model_name,\n\
+          \            \"version\": int(mv.version),\n            \"alias\": \"champion\"\
+          ,\n        })\n    except Exception as e:\n        print(f\"DS: model registration\
+          \ failed (non-fatal): {e}\")\n        return json.dumps({\"registered\"\
+          : False, \"reason\": str(e)[:200]})\n\n"
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-ds-model-training:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - ds_model_training
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef ds_model_training(\n    dataset: dsl.Input[dsl.Dataset],\n  \
+          \  tracking_uri: str,\n    experiment_name: str,\n    s3_endpoint: str,\n\
+          \    aws_key: str,\n    aws_secret: str,\n    pg_host: str = \"postgres\"\
+          ,\n    pg_database: str = \"warehouse\",\n) -> str:\n    \"\"\"Train XGBoost,\
+          \ log to MLflow. Returns JSON with run_id, model_uri, metrics.\"\"\"\n \
+          \   import json\n    import os\n\n    import mlflow\n    import mlflow.data\n\
+          \    import mlflow.sklearn\n    import numpy as np\n    import pandas as\
+          \ pd\n    import xgboost as xgb\n    from openlineage_oai.adapters.mlflow.dataset_source\
+          \ import URIDatasetSource\n    from sklearn.metrics import (\n        f1_score,\
+          \ precision_score, recall_score, roc_auc_score,\n    )\n    from sklearn.model_selection\
+          \ import train_test_split\n    from sklearn.preprocessing import LabelEncoder\n\
+          \n    os.environ[\"MLFLOW_S3_ENDPOINT_URL\"] = s3_endpoint\n    os.environ[\"\
+          AWS_ACCESS_KEY_ID\"] = aws_key\n    os.environ[\"AWS_SECRET_ACCESS_KEY\"\
+          ] = aws_secret\n    os.environ[\"OPENLINEAGE_URL\"] = \"http://marquez\"\
+          \n    # OPENLINEAGE_NAMESPACE is injected by the Argo workflow controller\n\
+          \    # via fieldRef: metadata.namespace -- no need to set it here.\n\n \
+          \   df = pd.read_parquet(dataset.path)\n\n    cat_cols = [\"contract_type\"\
+          , \"internet_service\", \"payment_method\"]\n    for col in cat_cols:\n\
+          \        df[col] = LabelEncoder().fit_transform(df[col].astype(str))\n\n\
+          \    feature_cols = [\n        \"tenure_months\", \"monthly_charges\", \"\
+          total_charges\",\n        \"num_support_tickets\", \"contract_type\", \"\
+          internet_service\",\n        \"payment_method\",\n    ]\n    X = df[feature_cols].values.astype(np.float32)\n\
+          \    y = df[\"churn\"].values.astype(np.int32)\n\n    X_train, X_test, y_train,\
+          \ y_test = train_test_split(\n        X, y, test_size=0.2, random_state=42,\
+          \ stratify=y,\n    )\n\n    params = {\n        \"max_depth\": 6,\n    \
+          \    \"learning_rate\": 0.1,\n        \"n_estimators\": 200,\n        \"\
+          objective\": \"binary:logistic\",\n        \"eval_metric\": \"logloss\"\
+          ,\n        \"seed\": 42,\n    }\n\n    mlflow.set_tracking_uri(tracking_uri)\n\
+          \    artifact_root = os.getenv(\"MLFLOW_S3_ARTIFACT_ROOT\", \"s3://mlflow/artifacts\"\
+          )\n    if mlflow.get_experiment_by_name(experiment_name) is None:\n    \
+          \    mlflow.create_experiment(experiment_name, artifact_location=artifact_root)\n\
+          \    mlflow.set_experiment(experiment_name)\n\n    with mlflow.start_run()\
+          \ as run:\n        dataset_source = f\"postgresql://{pg_host}:5432/{pg_database}.customer_features\"\
+          \n        train_dataset = mlflow.data.from_pandas(\n            df, source=URIDatasetSource(dataset_source),\
+          \ name=\"customer_features_view\",\n        )\n        mlflow.log_input(train_dataset,\
+          \ context=\"training\")\n\n        mlflow.log_params(params)\n\n       \
+          \ model = xgb.XGBClassifier(**params)\n        model.fit(X_train, y_train,\
+          \ eval_set=[(X_test, y_test)], verbose=False)\n\n        y_pred = model.predict(X_test)\n\
+          \        y_prob = model.predict_proba(X_test)[:, 1]\n\n        metrics =\
+          \ {\n            \"roc_auc\": float(roc_auc_score(y_test, y_prob)),\n  \
+          \          \"f1\": float(f1_score(y_test, y_pred)),\n            \"precision\"\
+          : float(precision_score(y_test, y_pred)),\n            \"recall\": float(recall_score(y_test,\
+          \ y_pred)),\n        }\n        mlflow.log_metrics(metrics)\n\n        info\
+          \ = mlflow.sklearn.log_model(model, artifact_path=\"model\")\n\n       \
+          \ print(f\"DS: model training complete - metrics: {metrics}\")\n       \
+          \ return json.dumps({\n            \"run_id\": run.info.run_id,\n      \
+          \      \"model_uri\": info.model_uri,\n            \"metrics\": metrics,\n\
+          \        })\n\n"
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-platform-feast-apply:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - platform_feast_apply
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef platform_feast_apply(\n    feast_repo_path: str,\n    pg_host:\
+          \ str,\n    redis_host: str,\n) -> str:\n    \"\"\"Run feast apply to register\
+          \ feature definitions. Emits OpenLineage events.\"\"\"\n    import os\n\
+          \    import subprocess\n\n    ol_namespace = os.environ.get(\"OPENLINEAGE_NAMESPACE\"\
+          , \"default\")\n    fs_yaml = os.path.join(feast_repo_path, \"feature_store.yaml\"\
+          )\n    with open(fs_yaml, \"w\") as f:\n        f.write(f\"\"\"\\\nproject:\
+          \ {ol_namespace}\nprovider: local\nregistry:\n  registry_type: sql\n  path:\
+          \ postgresql://feast:feast@{pg_host}:5432/warehouse\n  cache_ttl_seconds:\
+          \ 60\noffline_store:\n  type: postgres\n  host: {pg_host}\n  port: 5432\n\
+          \  database: warehouse\n  db_schema: public\n  user: feast\n  password:\
+          \ feast\nonline_store:\n  type: redis\n  connection_string: {redis_host}:6379\n\
+          entity_key_serialization_version: 2\nopenlineage:\n  enabled: true\n  transport_type:\
+          \ http\n  transport_url: http://marquez\n  emit_on_apply: true\n  emit_on_materialize:\
+          \ true\n\"\"\")\n    print(f\"Patched {fs_yaml} -> ol_ns={ol_namespace}\"\
+          )\n\n    env = os.environ.copy()\n    env[\"REDIS_PORT\"] = \"6379\"\n \
+          \   result = subprocess.run(\n        [\"feast\", \"apply\"],\n        cwd=feast_repo_path,\n\
+          \        capture_output=True, text=True,\n        env=env,\n    )\n    print(result.stdout)\n\
+          \    if result.returncode != 0:\n        print(f\"STDERR: {result.stderr}\"\
+          )\n        raise RuntimeError(f\"feast apply failed: {result.stderr[:500]}\"\
+          )\n    print(\"Platform: feast apply succeeded\")\n    return \"applied\"\
+          \n\n"
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-platform-feast-materialize:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - platform_feast_materialize
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef platform_feast_materialize(\n    feast_repo_path: str,\n    pg_host:\
+          \ str,\n    redis_host: str,\n    apply_done: str,\n) -> str:\n    \"\"\"\
+          Materialize features from offline to online store. Emits OpenLineage events.\"\
+          \"\"\n    import os\n    from datetime import datetime, timedelta\n    from\
+          \ feast import FeatureStore\n\n    ol_namespace = os.environ.get(\"OPENLINEAGE_NAMESPACE\"\
+          , \"default\")\n    fs_yaml = os.path.join(feast_repo_path, \"feature_store.yaml\"\
+          )\n    with open(fs_yaml, \"w\") as f:\n        f.write(f\"\"\"\\\nproject:\
+          \ {ol_namespace}\nprovider: local\nregistry:\n  registry_type: sql\n  path:\
+          \ postgresql://feast:feast@{pg_host}:5432/warehouse\n  cache_ttl_seconds:\
+          \ 60\noffline_store:\n  type: postgres\n  host: {pg_host}\n  port: 5432\n\
+          \  database: warehouse\n  db_schema: public\n  user: feast\n  password:\
+          \ feast\nonline_store:\n  type: redis\n  connection_string: {redis_host}:6379\n\
+          entity_key_serialization_version: 2\nopenlineage:\n  enabled: true\n  transport_type:\
+          \ http\n  transport_url: http://marquez\n  emit_on_apply: true\n  emit_on_materialize:\
+          \ true\n\"\"\")\n\n    store = FeatureStore(repo_path=feast_repo_path)\n\
+          \    end = datetime.utcnow()\n    start = end - timedelta(days=1000)\n \
+          \   print(f\"Materializing features {start.isoformat()} -> {end.isoformat()}\"\
+          )\n    store.materialize(start_date=start, end_date=end)\n    print(\"Platform:\
+          \ feast materialize succeeded\")\n    return \"materialized\"\n\n"
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-platform-spark-etl:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - platform_spark_etl
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef platform_spark_etl(\n    minio_endpoint: str,\n    pg_host: str,\n\
+          \    pg_user: str,\n    pg_password: str,\n    pg_database: str,\n    warehouse_table:\
+          \ str,\n    openlineage_url: str,\n    aws_access_key: str,\n    aws_secret_key:\
+          \ str,\n) -> str:\n    \"\"\"PySpark ETL that reads CSV from MinIO, transforms,\
+          \ writes to PostgreSQL.\n    The OpenLineage Spark listener emits lineage\
+          \ events automatically.\n    OPENLINEAGE_NAMESPACE is injected by the Argo\
+          \ workflow controller.\"\"\"\n    import os\n    import subprocess\n\n \
+          \   os.environ[\"MINIO_ENDPOINT\"] = minio_endpoint\n    os.environ[\"PG_HOST\"\
+          ] = pg_host\n    os.environ[\"PG_USER\"] = pg_user\n    os.environ[\"PG_PASSWORD\"\
+          ] = pg_password\n    os.environ[\"PG_DATABASE\"] = pg_database\n    os.environ[\"\
+          WAREHOUSE_TABLE\"] = warehouse_table\n    os.environ[\"OPENLINEAGE_URL\"\
+          ] = openlineage_url\n    os.environ[\"AWS_ACCESS_KEY_ID\"] = aws_access_key\n\
+          \    os.environ[\"AWS_SECRET_ACCESS_KEY\"] = aws_secret_key\n\n    result\
+          \ = subprocess.run(\n        [\"python3\", \"/opt/spark/spark_etl.py\"],\n\
+          \        capture_output=True, text=True,\n    )\n    print(result.stdout)\n\
+          \    if result.returncode != 0:\n        print(f\"STDERR: {result.stderr}\"\
+          )\n        raise RuntimeError(f\"Spark ETL failed: {result.stderr[:500]}\"\
+          )\n    print(\"Platform: spark ETL succeeded\")\n    return \"etl_done\"\
+          \n\n"
+        image: image-registry.openshift-image-registry.svc:5000/lineage/spark-etl:latest
 pipelineInfo:
-  description: 'End-to-end: Feast extraction, Validation, Feature engineering, XGBoost
-    training, Evaluation, MLflow registration'
+  description: 'End-to-end churn prediction pipeline. PLATFORM steps: Spark ETL, Feast
+    apply & materialize (managed by infra). DS steps: data extraction, feature engineering,
+    XGBoost training, evaluation, MLflow registration (owned by data scientists).
+    OPENLINEAGE_NAMESPACE is injected by the Argo workflow controller.'
   name: customer-churn-ml-pipeline
 root:
   dag:
     tasks:
-      step1-data-extraction:
-        cachingOptions:
-          enableCache: true
+      ds-data-extraction:
+        cachingOptions: {}
         componentRef:
-          name: comp-step1-data-extraction
+          name: comp-ds-data-extraction
+        dependentTasks:
+        - platform-feast-materialize
         inputs:
           parameters:
             feast_repo_path:
               componentInputParameter: feast_repo_path
+            materialize_done:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: platform-feast-materialize
             pg_host:
               componentInputParameter: pg_host
             pg_url:
@@ -423,86 +603,42 @@ root:
             table_name:
               componentInputParameter: table_name
         taskInfo:
-          name: step1-data-extraction
-      step2-data-validation:
-        cachingOptions:
-          enableCache: true
+          name: ds-data-extraction
+      ds-evaluation:
+        cachingOptions: {}
         componentRef:
-          name: comp-step2-data-validation
+          name: comp-ds-evaluation
         dependentTasks:
-        - step1-data-extraction
-        inputs:
-          artifacts:
-            dataset:
-              taskOutputArtifact:
-                outputArtifactKey: output_path
-                producerTask: step1-data-extraction
-        taskInfo:
-          name: step2-data-validation
-      step3-feature-engineering:
-        cachingOptions:
-          enableCache: true
-        componentRef:
-          name: comp-step3-feature-engineering
-        dependentTasks:
-        - step2-data-validation
-        inputs:
-          artifacts:
-            dataset:
-              taskOutputArtifact:
-                outputArtifactKey: output_path
-                producerTask: step2-data-validation
-        taskInfo:
-          name: step3-feature-engineering
-      step4-model-training:
-        cachingOptions:
-          enableCache: true
-        componentRef:
-          name: comp-step4-model-training
-        dependentTasks:
-        - step3-feature-engineering
-        inputs:
-          artifacts:
-            dataset:
-              taskOutputArtifact:
-                outputArtifactKey: output_path
-                producerTask: step3-feature-engineering
-          parameters:
-            aws_key:
-              componentInputParameter: aws_key
-            aws_secret:
-              componentInputParameter: aws_secret
-            experiment_name:
-              componentInputParameter: experiment_name
-            s3_endpoint:
-              componentInputParameter: s3_endpoint
-            tracking_uri:
-              componentInputParameter: tracking_uri
-        taskInfo:
-          name: step4-model-training
-      step5-evaluation:
-        cachingOptions:
-          enableCache: true
-        componentRef:
-          name: comp-step5-evaluation
-        dependentTasks:
-        - step4-model-training
+        - ds-model-training
         inputs:
           parameters:
             train_result_json:
               taskOutputParameter:
                 outputParameterKey: Output
-                producerTask: step4-model-training
+                producerTask: ds-model-training
         taskInfo:
-          name: step5-evaluation
-      step6-model-registration:
-        cachingOptions:
-          enableCache: true
+          name: ds-evaluation
+      ds-feature-engineering:
+        cachingOptions: {}
         componentRef:
-          name: comp-step6-model-registration
+          name: comp-ds-feature-engineering
         dependentTasks:
-        - step4-model-training
-        - step5-evaluation
+        - ds-data-extraction
+        inputs:
+          artifacts:
+            dataset:
+              taskOutputArtifact:
+                outputArtifactKey: output_path
+                producerTask: ds-data-extraction
+        taskInfo:
+          name: ds-feature-engineering
+      ds-model-registration:
+        cachingOptions: {}
+        componentRef:
+          name: comp-ds-model-registration
+        dependentTasks:
+        - ds-evaluation
+        - ds-model-training
         inputs:
           parameters:
             aws_key:
@@ -512,7 +648,7 @@ root:
             metrics_json:
               taskOutputParameter:
                 outputParameterKey: Output
-                producerTask: step5-evaluation
+                producerTask: ds-evaluation
             model_name:
               componentInputParameter: model_name
             roc_auc_threshold:
@@ -524,9 +660,106 @@ root:
             train_result_json:
               taskOutputParameter:
                 outputParameterKey: Output
-                producerTask: step4-model-training
+                producerTask: ds-model-training
         taskInfo:
-          name: step6-model-registration
+          name: ds-model-registration
+      ds-model-training:
+        cachingOptions: {}
+        componentRef:
+          name: comp-ds-model-training
+        dependentTasks:
+        - ds-feature-engineering
+        inputs:
+          artifacts:
+            dataset:
+              taskOutputArtifact:
+                outputArtifactKey: output_path
+                producerTask: ds-feature-engineering
+          parameters:
+            aws_key:
+              componentInputParameter: aws_key
+            aws_secret:
+              componentInputParameter: aws_secret
+            experiment_name:
+              componentInputParameter: experiment_name
+            pg_database:
+              runtimeValue:
+                constant: warehouse
+            pg_host:
+              componentInputParameter: pg_host
+            s3_endpoint:
+              componentInputParameter: s3_endpoint
+            tracking_uri:
+              componentInputParameter: tracking_uri
+        taskInfo:
+          name: ds-model-training
+      platform-feast-apply:
+        cachingOptions: {}
+        componentRef:
+          name: comp-platform-feast-apply
+        dependentTasks:
+        - platform-spark-etl
+        inputs:
+          parameters:
+            feast_repo_path:
+              componentInputParameter: feast_repo_path
+            pg_host:
+              componentInputParameter: pg_host
+            redis_host:
+              componentInputParameter: redis_host
+        taskInfo:
+          name: platform-feast-apply
+      platform-feast-materialize:
+        cachingOptions: {}
+        componentRef:
+          name: comp-platform-feast-materialize
+        dependentTasks:
+        - platform-feast-apply
+        inputs:
+          parameters:
+            apply_done:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: platform-feast-apply
+            feast_repo_path:
+              componentInputParameter: feast_repo_path
+            pg_host:
+              componentInputParameter: pg_host
+            redis_host:
+              componentInputParameter: redis_host
+        taskInfo:
+          name: platform-feast-materialize
+      platform-spark-etl:
+        cachingOptions: {}
+        componentRef:
+          name: comp-platform-spark-etl
+        inputs:
+          parameters:
+            aws_access_key:
+              componentInputParameter: aws_key
+            aws_secret_key:
+              componentInputParameter: aws_secret
+            minio_endpoint:
+              runtimeValue:
+                constant: mlflow-minio:9000
+            openlineage_url:
+              runtimeValue:
+                constant: http://marquez
+            pg_database:
+              runtimeValue:
+                constant: warehouse
+            pg_host:
+              componentInputParameter: pg_host
+            pg_password:
+              runtimeValue:
+                constant: feast
+            pg_user:
+              runtimeValue:
+                constant: feast
+            warehouse_table:
+              componentInputParameter: table_name
+        taskInfo:
+          name: platform-spark-etl
   inputDefinitions:
     parameters:
       aws_key:
@@ -534,11 +767,11 @@ root:
         isOptional: true
         parameterType: STRING
       aws_secret:
-        defaultValue: minioadmin
+        defaultValue: minioadmin123
         isOptional: true
         parameterType: STRING
       experiment_name:
-        defaultValue: customer_churn
+        defaultValue: customer_churn_lineage
         isOptional: true
         parameterType: STRING
       feast_repo_path:
@@ -550,15 +783,15 @@ root:
         isOptional: true
         parameterType: STRING
       pg_host:
-        defaultValue: postgres.fkm-test.svc.cluster.local
+        defaultValue: postgres
         isOptional: true
         parameterType: STRING
       pg_url:
-        defaultValue: postgresql://feast:feast@postgres.fkm-test.svc.cluster.local:5432/warehouse
+        defaultValue: postgresql://feast:feast@postgres:5432/warehouse
         isOptional: true
         parameterType: STRING
       redis_host:
-        defaultValue: redis.fkm-test.svc.cluster.local
+        defaultValue: redis
         isOptional: true
         parameterType: STRING
       roc_auc_threshold:
@@ -566,7 +799,7 @@ root:
         isOptional: true
         parameterType: NUMBER_DOUBLE
       s3_endpoint:
-        defaultValue: http://minio.fkm-test.svc.cluster.local:9000
+        defaultValue: http://mlflow-minio:9000
         isOptional: true
         parameterType: STRING
       table_name:
@@ -574,7 +807,7 @@ root:
         isOptional: true
         parameterType: STRING
       tracking_uri:
-        defaultValue: http://mlflow.fkm-test.svc.cluster.local:5000
+        defaultValue: openlineage+http://mlflow-server:5000
         isOptional: true
         parameterType: STRING
 schemaVersion: 2.1.0

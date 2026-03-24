@@ -61,13 +61,17 @@ def run() -> dict:
     metrics = evaluation(train_result, tracking_uri=MLFLOW_TRACKING_URI)
 
     # STEP 6 — Conditional Model Registration
-    reg_result = model_registration(
-        train_result=train_result,
-        metrics=metrics,
-        model_name=MODEL_NAME,
-        tracking_uri=MLFLOW_TRACKING_URI,
-        roc_auc_threshold=MODEL_ROC_AUC_THRESHOLD,
-    )
+    try:
+        reg_result = model_registration(
+            train_result=train_result,
+            metrics=metrics,
+            model_name=MODEL_NAME,
+            tracking_uri=MLFLOW_TRACKING_URI,
+            roc_auc_threshold=MODEL_ROC_AUC_THRESHOLD,
+        )
+    except Exception:
+        logger.exception("STEP 6  Model registration failed (non-fatal)")
+        reg_result = {"registered": False, "reason": "error"}
 
     logger.info("═══ STAGE 3 – PIPELINE COMPLETE ═══")
     return {"metrics": metrics, "registration": reg_result}

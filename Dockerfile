@@ -5,6 +5,7 @@ USER 0
 WORKDIR /app
 
 COPY requirements.txt .
+COPY wheels/ wheels/
 RUN pip3 install --no-cache-dir -r requirements.txt
 
 COPY configs/ configs/

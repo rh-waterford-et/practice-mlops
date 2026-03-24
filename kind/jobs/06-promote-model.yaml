@@ -1,0 +1,64 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: promote-model
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    stage: "06-promote"
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        job: promote-model
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      containers:
+        - name: promote
+          image: fkm-app:latest
+          imagePullPolicy: Never
+          command:
+            - python3
+            - -c
+            - |
+              import os, mlflow
+              from mlflow.tracking import MlflowClient
+
+              tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow-server:5000")
+              model_name = os.getenv("MODEL_NAME", "customer_churn_model")
+
+              mlflow.set_tracking_uri(tracking_uri)
+              client = MlflowClient()
+
+              try:
+                  mv = client.get_model_version_by_alias(model_name, "champion")
+                  print(f"Champion model: {model_name} v{mv.version}")
+                  print("Model is ready for serving.")
+              except Exception as e:
+                  print(f"No 'champion' alias found for {model_name}: {e}")
+                  versions = client.search_model_versions(
+                      f"name='{model_name}'",
+                      order_by=["version_number DESC"],
+                      max_results=1,
+                  )
+                  if versions:
+                      v = versions[0].version
+                      client.set_registered_model_alias(model_name, "champion", str(v))
+                      print(f"Set {model_name} v{v} as champion")
+                  else:
+                      print(f"No versions found for {model_name}")
+          envFrom:
+            - configMapRef:
+                name: fkm-config
+            - secretRef:
+                name: fkm-credentials
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

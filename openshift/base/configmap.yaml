@@ -2,15 +2,15 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: fkm-config
-  namespace: fkm-test
+  namespace: lineage
   labels:
     app.kubernetes.io/part-of: feast-kfp-mlflow
 data:
   # ── MinIO / S3 ──────────────────────────────────────────────────────
-  MINIO_ENDPOINT: "minio:9000"
+  MINIO_ENDPOINT: "mlflow-minio:9000"
   MINIO_BUCKET: "raw-data"
   MINIO_SECURE: "false"
-  MLFLOW_S3_ENDPOINT_URL: "http://minio:9000"
+  MLFLOW_S3_ENDPOINT_URL: "http://mlflow-minio:9000"
 
   # ── PostgreSQL ──────────────────────────────────────────────────────
   PG_HOST: "postgres"
@@ -23,8 +23,15 @@ data:
   REDIS_PORT: "6379"
 
   # ── MLflow ──────────────────────────────────────────────────────────
-  MLFLOW_TRACKING_URI: "http://mlflow:5000"
-  MLFLOW_EXPERIMENT_NAME: "customer_churn"
+  MLFLOW_TRACKING_URI: "openlineage+http://mlflow-server:5000"
+  MLFLOW_REGISTRY_URI: "http://mlflow-server:5000"
+  MLFLOW_EXPERIMENT_NAME: "customer_churn_lineage"
+
+  MLFLOW_ARTIFACT_URI: "s3://mlflow/artifacts"
+
+  # ── OpenLineage ────────────────────────────────────────────────────
+  OPENLINEAGE_URL: "http://marquez"
+  OPENLINEAGE_NAMESPACE: "churn-demo/customer_churn"
 
   # ── Feast ───────────────────────────────────────────────────────────
   FEAST_REPO_PATH: "/app/src/feature_store"

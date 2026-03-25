@@ -1,0 +1,44 @@
+---
+# BuildConfig to mirror Milvus from Docker Hub to OpenShift internal registry
+# This avoids Docker Hub rate limits by caching the image internally
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: milvus
+  namespace: lineage
+  labels:
+    app: milvus
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  output:
+    to:
+      kind: ImageStreamTag
+      name: milvus:v2.3.4
+  source:
+    type: Dockerfile
+    dockerfile: |
+      # Import Milvus from Docker Hub and re-tag in OpenShift registry
+      # Force amd64 architecture for ROSA cluster (AWS runs on amd64)
+      FROM --platform=linux/amd64 milvusdb/milvus:v2.3.4
+  strategy:
+    type: Docker
+    dockerStrategy:
+      from:
+        kind: DockerImage
+        name: docker.io/milvusdb/milvus:v2.3.4
+  triggers:
+    - type: ConfigChange
+
+---
+# ImageStream for Milvus
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: milvus
+  namespace: lineage
+  labels:
+    app: milvus
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  lookupPolicy:
+    local: true

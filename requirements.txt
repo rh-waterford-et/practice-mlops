@@ -37,3 +37,8 @@ great-expectations>=1.0.0,<2
 # Utilities
 python-dotenv>=1.0.0,<2
 PyYAML>=6.0,<7
+
+# RAG / Vector DB
+sentence-transformers>=2.2.0,<3
+pymilvus>=2.3.0,<3
+torch>=2.0.0,<3

@@ -1,0 +1,73 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: attu
+  namespace: lineage
+  labels:
+    app: attu
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: attu
+  template:
+    metadata:
+      labels:
+        app: attu
+    spec:
+      containers:
+        - name: attu
+          image: image-registry.openshift-image-registry.svc:5000/lineage/zilliz-attu:v2.3
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: MILVUS_URL
+              value: "milvus:19530"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: attu
+  namespace: lineage
+  labels:
+    app: attu
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 3000
+      protocol: TCP
+      name: http
+  selector:
+    app: attu
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: attu
+  namespace: lineage
+  labels:
+    app: attu
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  to:
+    kind: Service
+    name: attu
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

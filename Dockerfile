@@ -11,6 +11,7 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 COPY configs/ configs/
 COPY src/ src/
 COPY data/customers.csv data/customers.csv
+COPY data/sample_docs/ data/sample_docs/
 
 RUN chown -R 1001:0 /app && chmod -R g=u /app
 

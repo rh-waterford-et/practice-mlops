@@ -1,0 +1,27 @@
+# Minimal image for RAG pipeline components
+FROM registry.access.redhat.com/ubi9/python-311:latest
+
+USER 0
+
+WORKDIR /app
+
+# Install only RAG-required dependencies
+RUN python3 -m pip install --no-cache-dir \
+    kfp==2.16.0 \
+    'minio>=7.1.0' \
+    'sentence-transformers>=2.2.0' \
+    'pymilvus>=2.3.0,<3' \
+    'openlineage-python>=1.0.0' \
+    'torch>=2.0.0' \
+    'transformers>=4.30.0'
+
+# Clean up to reduce image size
+RUN rm -rf /root/.cache /tmp/*
+
+RUN chown -R 1001:0 /app && chmod -R g=u /app
+
+USER 1001
+
+ENV PYTHONPATH=/app
+
+CMD ["python3", "--version"]

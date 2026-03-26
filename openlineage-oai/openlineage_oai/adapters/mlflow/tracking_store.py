@@ -30,6 +30,7 @@ Examples:
 The "openlineage+" prefix triggers this plugin via MLflow entry points.
 """
 
+import os
 import threading
 import warnings
 from dataclasses import dataclass, field
@@ -159,6 +160,40 @@ class OpenLineageTrackingStore:
             return _get_store(backend_uri, artifact_uri)
 
     # ========================================================================
+    # Parent Run Facet
+    # ========================================================================
+
+    @staticmethod
+    def _build_parent_run_facet() -> dict[str, Any]:
+        """Build a ParentRunFacet from orchestrator env vars if available.
+
+        Reads OPENLINEAGE_PARENT_RUN_ID and OPENLINEAGE_PARENT_JOB_NAME
+        (or KFP_RUN_ID / KFP_PIPELINE_NAME as fallbacks) injected by the
+        platform into pipeline pods.
+        """
+        run_id = (
+            os.environ.get("OPENLINEAGE_PARENT_RUN_ID")
+            or os.environ.get("KFP_RUN_ID", "")
+        )
+        job_name = (
+            os.environ.get("OPENLINEAGE_PARENT_JOB_NAME")
+            or os.environ.get("KFP_PIPELINE_NAME", "")
+        )
+        if not run_id:
+            return {}
+        return {
+            "parent": {
+                "_producer": "https://github.com/rh-waterford-et/openlineage-oai/mlflow-adapter",
+                "_schemaURL": "https://openlineage.io/spec/facets/1-0-0/ParentRunFacet.json",
+                "run": {"runId": run_id},
+                "job": {
+                    "namespace": os.environ.get("OPENLINEAGE_NAMESPACE", "default"),
+                    "name": job_name or "unknown-pipeline",
+                },
+            }
+        }
+
+    # ========================================================================
     # Run Lifecycle Methods (emit OpenLineage events)
     # ========================================================================
 
@@ -191,11 +226,11 @@ class OpenLineageTrackingStore:
         except Exception:
             experiment_name = ""
 
-        # Build job name
         job_name = build_mlflow_job_name(
             experiment_id=experiment_id,
             run_name=run_name,
             run_id=run_id,
+            experiment_name=experiment_name,
         )
 
         # Initialize run state
@@ -212,6 +247,7 @@ class OpenLineageTrackingStore:
             run_id=run_id,
             job_name=job_name,
             job_namespace=self._namespace,
+            run_facets=self._build_parent_run_facet(),
         )
 
         return run
@@ -263,6 +299,7 @@ class OpenLineageTrackingStore:
                         tags=filter_system_tags(state.tags),
                     ),
                 }
+                run_facets.update(self._build_parent_run_facet())
 
                 self._emitter.emit_complete(
                     run_id=run_id,
@@ -283,6 +320,7 @@ class OpenLineageTrackingStore:
                     error_message=error_msg,
                     inputs=state.inputs,
                     outputs=state.outputs,
+                    run_facets=self._build_parent_run_facet(),
                 )
 
             # Cleanup run state

@@ -12,14 +12,15 @@ Upload to OpenShift AI:
 """
 
 from kfp import dsl, compiler
+from kfp import kubernetes
 
 # The fkm-app image built via OpenShift BuildConfig contains all deps.
 # Override at pipeline-creation time via the `image` parameter.
 FKM_IMAGE = (
-    "image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest"
+    "image-registry.openshift-image-registry.svc:5000/lineage-ben/fkm-app:latest"
 )
 SPARK_IMAGE = (
-    "image-registry.openshift-image-registry.svc:5000/lineage/spark-etl:latest"
+    "image-registry.openshift-image-registry.svc:5000/lineage-ben/spark-etl:latest"
 )
 
 
@@ -56,7 +57,7 @@ def platform_spark_etl(
     os.environ["AWS_SECRET_ACCESS_KEY"] = aws_secret_key
 
     with kfp_lineage(
-        "platform_spark_etl",
+        "kfp-spark_etl",
         inputs=[{"namespace": "s3://raw-data", "name": "customers.csv"}],
         outputs=[{"namespace": f"postgres://{pg_host}:5432", "name": f"{pg_database}.{warehouse_table}"}],
         url=openlineage_url,
@@ -88,10 +89,11 @@ def platform_feast_apply(
     from openlineage_oai.adapters.kfp import kfp_lineage
 
     ol_namespace = os.environ.get("OPENLINEAGE_NAMESPACE", "default")
+    feast_project = ol_namespace.replace("-", "_")
     fs_yaml = os.path.join(feast_repo_path, "feature_store.yaml")
     with open(fs_yaml, "w") as f:
         f.write(f"""\
-project: {ol_namespace}
+project: {feast_project}
 provider: local
 registry:
   registry_type: sql
@@ -120,12 +122,13 @@ openlineage:
 
     pg_ns = f"postgres://{pg_host}:5432"
 
+    feast_ns = ol_namespace.replace("-", "_")
+
     with kfp_lineage(
-        "platform_feast_apply",
+        "kfp-feast_apply",
         inputs=[{"namespace": pg_ns, "name": "warehouse.customer_features"}],
         outputs=[
             {"namespace": pg_ns, "name": "warehouse.customer_features_view"},
-            {"namespace": f"redis://{redis_host}:6379", "name": "customer_features_view"},
         ],
         url="http://marquez",
     ):
@@ -162,10 +165,11 @@ def platform_feast_materialize(
     from openlineage_oai.adapters.kfp import kfp_lineage
 
     ol_namespace = os.environ.get("OPENLINEAGE_NAMESPACE", "default")
+    feast_project = ol_namespace.replace("-", "_")
     fs_yaml = os.path.join(feast_repo_path, "feature_store.yaml")
     with open(fs_yaml, "w") as f:
         f.write(f"""\
-project: {ol_namespace}
+project: {feast_project}
 provider: local
 registry:
   registry_type: sql
@@ -194,9 +198,9 @@ openlineage:
     pg_ns = f"postgres://{pg_host}:5432"
 
     with kfp_lineage(
-        "platform_feast_materialize",
-        inputs=[{"namespace": pg_ns, "name": "warehouse.customer_features_view"}],
-        outputs=[{"namespace": f"redis://{redis_host}:6379", "name": "customer_features_view"}],
+        "kfp-feast_materialize",
+        inputs=[{"namespace": pg_ns, "name": "warehouse.customer_features"}],
+        outputs=[{"namespace": feast_project, "name": "online_store_customer_features_view"}],
         url="http://marquez",
     ):
         store = FeatureStore(repo_path=feast_repo_path)
@@ -227,13 +231,14 @@ def ds_data_extraction(
     import pandas as pd
     from sqlalchemy import create_engine, text
     from feast import FeatureStore
-    from openlineage_oai.adapters.kfp import kfp_lineage
+    from openlineage_oai.adapters.kfp import kfp_lineage, kfp_output_with_schema
 
     ol_namespace = os.environ.get("OPENLINEAGE_NAMESPACE", "default")
+    feast_project = ol_namespace.replace("-", "_")
     fs_yaml = os.path.join(feast_repo_path, "feature_store.yaml")
     with open(fs_yaml, "w") as f:
         f.write(f"""\
-project: {ol_namespace}
+project: {feast_project}
 provider: local
 registry:
   registry_type: sql
@@ -261,11 +266,11 @@ openlineage:
     print(f"Patched {fs_yaml} -> pg={pg_host}, redis={redis_host}, ol_ns={ol_namespace}")
 
     with kfp_lineage(
-        "ds_data_extraction",
+        "kfp-data_extraction",
         inputs=[{"namespace": f"postgres://{pg_host}:5432", "name": "warehouse.customer_features_view"}],
-        outputs=[output_path],
+        outputs=[],
         url="http://marquez",
-    ):
+    ) as run:
         engine = create_engine(pg_url)
         with engine.connect() as conn:
             entity_df = pd.read_sql(
@@ -304,6 +309,7 @@ openlineage:
         )
         print(f"DS: data extraction complete - shape {result.shape}")
         result.to_parquet(output_path.path)
+        run.add_output(kfp_output_with_schema(output_path, result))
 
 
 # =======================================================================
@@ -317,14 +323,14 @@ def ds_feature_engineering(
     """Add derived features."""
     import numpy as np
     import pandas as pd
-    from openlineage_oai.adapters.kfp import kfp_lineage
+    from openlineage_oai.adapters.kfp import kfp_lineage, kfp_output_with_schema
 
     with kfp_lineage(
-        "ds_feature_engineering",
+        "kfp-feature_engineering",
         inputs=[dataset],
-        outputs=[output_path],
+        outputs=[],
         url="http://marquez",
-    ):
+    ) as run:
         df = pd.read_parquet(dataset.path)
         tenure_safe = df["tenure_months"].replace(0, 1)
         df["charges_per_month"] = df["total_charges"] / tenure_safe
@@ -335,6 +341,7 @@ def ds_feature_engineering(
 
         print(f"DS: feature engineering complete - shape {df.shape}")
         df.to_parquet(output_path.path)
+        run.add_output(kfp_output_with_schema(output_path, df))
 
 
 # =======================================================================
@@ -367,15 +374,17 @@ def ds_model_training(
     from sklearn.model_selection import train_test_split
     from sklearn.preprocessing import LabelEncoder
 
+    ol_namespace = os.environ.get("OPENLINEAGE_NAMESPACE", "default")
+
     os.environ["MLFLOW_S3_ENDPOINT_URL"] = s3_endpoint
     os.environ["AWS_ACCESS_KEY_ID"] = aws_key
     os.environ["AWS_SECRET_ACCESS_KEY"] = aws_secret
     os.environ["OPENLINEAGE_URL"] = "http://marquez"
 
     with kfp_lineage(
-        "ds_model_training",
+        "kfp-model_training",
         inputs=[dataset],
-        outputs=[{"namespace": "s3://mlflow", "name": f"artifacts/{experiment_name}/model"}],
+        outputs=[{"namespace": ol_namespace, "name": "model/model"}],
         url="http://marquez",
     ):
         df = pd.read_parquet(dataset.path)
@@ -450,11 +459,14 @@ def ds_model_training(
 def ds_evaluation(train_result_json: str) -> str:
     """Display and return evaluation metrics."""
     import json
+    import os
     from openlineage_oai.adapters.kfp import kfp_lineage
 
+    ol_namespace = os.environ.get("OPENLINEAGE_NAMESPACE", "default")
+
     with kfp_lineage(
-        "ds_evaluation",
-        inputs=[{"namespace": "s3://mlflow", "name": "artifacts/model"}],
+        "kfp-evaluation",
+        inputs=[{"namespace": ol_namespace, "name": "model/model"}],
         outputs=[],
         url="http://marquez",
     ):
@@ -496,9 +508,11 @@ def ds_model_registration(
     plain_uri = tracking_uri.replace("openlineage+", "")
     os.environ["MLFLOW_REGISTRY_URI"] = plain_uri
 
+    ol_namespace = os.environ.get("OPENLINEAGE_NAMESPACE", "default")
+
     with kfp_lineage(
-        "ds_model_registration",
-        inputs=[{"namespace": "s3://mlflow", "name": "artifacts/model"}],
+        "kfp-model_registration",
+        inputs=[{"namespace": ol_namespace, "name": "model/model"}],
         outputs=[{"namespace": "mlflow", "name": f"models:/{model_name}"}],
         url="http://marquez",
     ):
@@ -627,6 +641,20 @@ def customer_churn_pipeline(
         roc_auc_threshold=roc_auc_threshold,
     )
     reg_task.set_caching_options(False)
+
+    # Inject parent run context for OpenLineage ParentRunFacet.
+    # We use the Kubernetes downward API to get the real workflow name as the
+    # parent run ID. In production OAI, the ds-pipelines-webhook should
+    # inject these automatically at pod admission time.
+    for task in [etl_task, apply_task, materialize_task, extract_task,
+                 engineer_task, train_task, eval_task, reg_task]:
+        kubernetes.use_field_path_as_env(
+            task, "OPENLINEAGE_PARENT_RUN_ID",
+            "metadata.labels['workflows.argoproj.io/workflow']",
+        )
+        task.set_env_variable(
+            "OPENLINEAGE_PARENT_JOB_NAME", "customer-churn-ml-pipeline",
+        )
 
 
 # =======================================================================

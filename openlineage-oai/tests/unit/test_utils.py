@@ -35,30 +35,27 @@ class TestBuildJobName:
 class TestBuildMLflowJobName:
     """Tests for MLflow-specific job name building."""
 
-    def test_with_run_name(self):
-        """Test MLflow job name with run name."""
-        name = build_mlflow_job_name(experiment_id="123", run_name="training-v1")
-        assert name == "mlflow/experiment-123/training-v1"
+    def test_with_experiment_name(self):
+        """Test MLflow job name uses experiment name."""
+        name = build_mlflow_job_name(
+            experiment_id="1", experiment_name="customer_churn_lineage",
+        )
+        assert name == "mlflow-customer-churn-lineage"
 
-    def test_with_run_id_fallback(self):
-        """Test MLflow job name falls back to run ID."""
-        name = build_mlflow_job_name(experiment_id="123", run_id="abc-def-456")
-        assert name == "mlflow/experiment-123/abc-def-456"
+    def test_falls_back_to_experiment_id(self):
+        """Test MLflow job name falls back to experiment ID."""
+        name = build_mlflow_job_name(experiment_id="123")
+        assert name == "mlflow-experiment-123"
 
-    def test_prefers_run_name_over_run_id(self):
-        """Test run name is preferred over run ID."""
+    def test_experiment_name_takes_priority(self):
+        """Test experiment name is preferred over run name / run ID."""
         name = build_mlflow_job_name(
             experiment_id="123",
             run_name="named-run",
             run_id="abc-def-456",
+            experiment_name="my_experiment",
         )
-        assert "named-run" in name
-        assert "abc-def-456" not in name
-
-    def test_unnamed_run_fallback(self):
-        """Test fallback to 'unnamed-run' when nothing provided."""
-        name = build_mlflow_job_name(experiment_id="123")
-        assert name == "mlflow/experiment-123/unnamed-run"
+        assert name == "mlflow-my-experiment"
 
 
 class TestSanitizeName:

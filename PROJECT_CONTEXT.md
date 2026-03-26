@@ -355,6 +355,93 @@ resolve dataset identities by name instead of hardcoding URIs.
 - **Cause**: Spark uses `s3a://` for Hadoop filesystem access
 - **Fix**: Spark config `replaceDatasetNamespacePattern: "s3a://->s3://"` normalises the scheme
 
+### 6.7 KFP wrapper vs native tool: schema facets and output edges
+
+#### The problem
+
+When a KFP pipeline step wraps a tool that has its own OpenLineage integration (Spark,
+Feast, MLflow), there are **two independent emitters** producing events for the **same
+dataset**: the native tool and the KFP wrapper (`kfp_lineage`).
+
+Marquez creates a new **dataset version** each time any job declares a dataset as an output
+in a `COMPLETE` event. The facets on the latest version are whatever that event includes —
+Marquez does not merge facets across versions. This means whichever emitter fires last
+"wins" and determines what metadata the UI shows.
+
+The execution order inside a KFP component is:
+
+```
+1. kfp_lineage.__enter__()  →  emits START event
+2. Native tool runs          →  emits its own START → COMPLETE (with schema facets)
+3. kfp_lineage.__exit__()   →  emits COMPLETE event
+```
+
+Because `kfp_lineage` COMPLETE fires **after** the native tool, it always creates the
+newest dataset version. If that version includes no schema facet, it overwrites the native
+tool's schema.
+
+#### The trade-off
+
+There is a direct conflict between two goals:
+
+| Goal | Requires |
+|---|---|
+| **Dataset schema visible** in Marquez entity view | The *latest* dataset version must include a `SchemaDatasetFacet` |
+| **KFP job shows output edge** in lineage graph | The KFP job's `COMPLETE` event must declare the dataset as an output |
+
+You cannot achieve both simultaneously for platform steps (where a native tool is the
+authoritative schema source) without workarounds, because:
+
+- If KFP COMPLETE declares the output → edge appears, but creates a schema-less version
+  that overwrites the native tool's schema.
+- If KFP COMPLETE omits the output → schema preserved, but no edge from the KFP job to
+  the dataset in the graph.
+- Declaring outputs only in the START event does not work — Marquez only creates job I/O
+  edges from COMPLETE (or FAIL) events.
+
+#### Current state
+
+The pipeline currently **includes outputs in KFP COMPLETE** for all steps, giving a
+fully connected lineage tree. For platform steps (`kfp-spark_etl`, `kfp-feast_apply`,
+`kfp-feast_materialize`) this means the KFP COMPLETE overwrites the native tool's
+schema — those datasets show edges but no schema in the Marquez UI. For data science
+steps where KFP is the sole emitter (`ds_data_extraction`, `ds_feature_engineering`),
+the `kfp_output_with_schema()` helper extracts schema from the pandas DataFrame at
+runtime and includes it in the COMPLETE event, so both the edge and schema are present.
+
+#### Possible resolutions
+
+1. **Accept missing edges on platform KFP jobs** — the native tool's job nodes still
+   show correct I/O. The KFP jobs appear as orchestration wrappers without output edges,
+   but the lineage chain is not broken because the native tool's job provides the
+   connection.
+
+2. **Accept missing schema on platform outputs** — restore outputs on KFP COMPLETE
+   (edges appear), and accept that schema is only visible on datasets where KFP is the
+   sole emitter. The lineage graph is fully connected; schema is a cosmetic loss.
+
+3. **Fetch-and-forward schema** — before emitting KFP COMPLETE, query the Marquez API
+   for each output's current schema facet and include it in the event. This preserves
+   both edges and schema but adds runtime coupling to the Marquez API and complexity.
+
+4. **Marquez-side fix** — contribute a change to Marquez so that COMPLETE events without
+   a given facet do not overwrite that facet on the dataset. This would be a facet-merge
+   semantic rather than the current replace semantic. This is the cleanest long-term
+   solution but requires upstream changes.
+
+5. **Emit KFP output events before the native tool** — restructure emission so KFP
+   declares outputs early (e.g. via a RUNNING event), then the native tool's COMPLETE
+   overwrites with schema. Requires testing whether Marquez creates edges from RUNNING
+   events (it may not).
+
+#### Recommendation for production
+
+This trade-off exists for any platform that orchestrates tools with their own OpenLineage
+integrations. It is not specific to this demo — any KFP/Airflow/Argo wrapper around
+Spark/Feast/MLflow will encounter the same "last writer wins" behaviour in Marquez. The
+engineering team should evaluate options 3 or 4 depending on whether the priority is a
+quick fix (option 3) or a proper upstream solution (option 4).
+
 ---
 
 ## 7. Repository Structure
@@ -449,10 +536,34 @@ curl -sL -X DELETE "$MARQUEZ/api/v1/namespaces/<encoded-namespace>/datasets/<enc
 ## 9. Known Gaps and Future Work
 
 ### KFP native OpenLineage integration
-KFP v2 has no native OL support. The SDK fills this gap manually. A proper integration
-would intercept artifact creation at the executor level and emit events automatically.
-The KFP `dsl.importer` component could help declare external datasets but still requires
-user code and doesn't emit OL events on its own.
+KFP v2 has no native OL support. The `kfp_lineage` context manager fills this gap but
+requires manually hardcoding dataset identities (namespace + name) for every input and
+output. These must exactly match the identities emitted by native tools (Spark, Feast,
+MLflow) or the graph will fork into disconnected nodes for the same physical dataset.
+KFP's artifact system (`dsl.Input`/`dsl.Output`) tracks URIs between steps but carries
+no schema metadata and has no OpenLineage awareness. A proper integration would intercept
+artifact creation at the executor level and emit events automatically, but this would
+require changes to `kfp-backend` or the Argo workflow controller — a significant upstream
+contribution.
+
+### KFP parent-child lineage via environment variable override
+The OpenLineage spec uses `ParentRunFacet` to link a child job's run to its parent. In
+KFP on DSPA, the Argo workflow controller injects `KFP_RUN_ID` and `KFP_PIPELINE_NAME`
+into every pod, pointing at the top-level pipeline run. Tools with their own OL
+integrations (MLflow, Feast) read these env vars to build their parent facet, which means
+they report the **pipeline** as their parent rather than the specific **KFP step** that
+invoked them.
+
+To fix this, `kfp_lineage.__enter__()` overwrites `OPENLINEAGE_PARENT_RUN_ID` and
+`OPENLINEAGE_PARENT_JOB_NAME` with its own run ID and job name before yielding control
+to the component body. Any nested emitter (MLflow tracking store, Feast emitter) then
+picks up the KFP step as its parent. The original pipeline-level parent is captured
+before the overwrite and used for the KFP step's own START/COMPLETE events.
+
+This is a workaround — it relies on environment variable mutation within a single
+process to propagate parent context. A cleaner solution would be an explicit parent
+context object passed through the call chain, or an OpenLineage context propagation
+standard (similar to OpenTelemetry's `traceparent`). Neither exists today.
 
 ### Feast `get_historical_features` lineage
 Feast emits lineage for `apply` and `materialize`, but not for `get_historical_features`.
@@ -474,3 +585,9 @@ use the SDK.
 The registry is integrated into the SDK but not yet used in the pipeline itself (pipeline
 steps construct identities from runtime URIs). Future work could have the registry serve as
 the single source of truth for all dataset identities across the platform.
+
+### Marquez "last writer wins" for dataset facets
+When multiple OpenLineage emitters produce events for the same dataset, the last COMPLETE
+event determines the dataset version shown in the UI. This creates a trade-off between
+graph connectivity and metadata richness for any orchestrator wrapping native OL tools.
+See **§6.7** for full analysis and resolution options.

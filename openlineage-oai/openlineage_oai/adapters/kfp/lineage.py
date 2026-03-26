@@ -55,7 +55,10 @@ def parse_kfp_artifact(artifact: Any) -> Dict[str, str]:
                 "Dict inputs must have 'namespace' and 'name' keys. "
                 f"Got keys: {list(artifact.keys())}"
             )
-        return {"namespace": artifact["namespace"], "name": artifact["name"]}
+        result = {"namespace": artifact["namespace"], "name": artifact["name"]}
+        if "facets" in artifact:
+            result["facets"] = artifact["facets"]
+        return result
 
     uri = getattr(artifact, "uri", None)
     if not uri:
@@ -86,6 +89,44 @@ class KFPRun:
     def add_output(self, artifact: DatasetSpec) -> None:
         """Declare an additional output dataset mid-run."""
         self._extra_outputs.append(parse_kfp_artifact(artifact))
+
+
+_PRODUCER = "https://github.com/rh-waterford-et/openlineage-oai/kfp-adapter"
+_SCHEMA_URL = (
+    "https://openlineage.io/spec/facets/1-0-0/SchemaDatasetFacet.json"
+    "#/$defs/SchemaDatasetFacet"
+)
+
+
+def kfp_output_with_schema(artifact: Any, df: Any) -> Dict[str, str]:
+    """Build an output dataset dict with schema extracted from a pandas DataFrame.
+
+    Combines the KFP artifact's URI-derived identity with the DataFrame's
+    column names and dtypes, so that the output dataset shows a schema facet
+    in Marquez.
+
+    Args:
+        artifact: A KFP artifact (``dsl.Output[dsl.Dataset]``) with a ``.uri``.
+        df: A pandas DataFrame whose columns define the schema.
+
+    Returns:
+        A dict suitable for ``run.add_output()``::
+
+            {"namespace": "s3://bucket", "name": "path/to/file",
+             "facets": {"schema": { ... }}}
+    """
+    ds = parse_kfp_artifact(artifact)
+    ds["facets"] = {
+        "schema": {
+            "_producer": _PRODUCER,
+            "_schemaURL": _SCHEMA_URL,
+            "fields": [
+                {"name": str(col), "type": str(df[col].dtype)}
+                for col in df.columns
+            ],
+        }
+    }
+    return ds
 
 
 class kfp_lineage:
@@ -135,11 +176,14 @@ class kfp_lineage:
 
     def __enter__(self) -> KFPRun:
         input_datasets = [parse_kfp_artifact(a) for a in self._raw_inputs]
+        output_datasets = [parse_kfp_artifact(a) for a in self._raw_outputs]
+
+        # Capture the pipeline-level parent before we overwrite the env vars.
+        self._parent_facet = build_parent_run_facet()
 
         run_facets: Dict[str, Any] = {}
-        parent = build_parent_run_facet()
-        if parent:
-            run_facets["parent"] = parent
+        if self._parent_facet:
+            run_facets["parent"] = self._parent_facet
 
         job_facets: Dict[str, Any] = {
             "jobType": build_job_type_facet(),
@@ -150,9 +194,15 @@ class kfp_lineage:
             job_name=self._job_name,
             job_namespace=self._namespace,
             inputs=input_datasets,
+            outputs=output_datasets,
             run_facets=run_facets,
             job_facets=job_facets,
         )
+
+        # Expose this run as the parent for any nested OL emitter (MLflow,
+        # Feast, etc.) that reads OPENLINEAGE_PARENT_* env vars.
+        os.environ["OPENLINEAGE_PARENT_RUN_ID"] = self._run_id
+        os.environ["OPENLINEAGE_PARENT_JOB_NAME"] = self._job_name
 
         return self._run
 
@@ -167,9 +217,8 @@ class kfp_lineage:
         )
 
         run_facets: Dict[str, Any] = {}
-        parent = build_parent_run_facet()
-        if parent:
-            run_facets["parent"] = parent
+        if self._parent_facet:
+            run_facets["parent"] = self._parent_facet
 
         job_facets: Dict[str, Any] = {
             "jobType": build_job_type_facet(),

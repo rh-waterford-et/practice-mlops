@@ -35,6 +35,18 @@ WAREHOUSE_TABLE = os.getenv("WAREHOUSE_TABLE", "customer_features")
 OPENLINEAGE_URL = os.getenv("OPENLINEAGE_URL", "http://marquez")
 OPENLINEAGE_NAMESPACE = os.getenv("OPENLINEAGE_NAMESPACE", "spark-etl")
 
+# The Spark OpenLineage listener uses appName as the root job name and creates
+# sub-jobs for each Spark action (e.g. {appName}.execute_save_into_data_source_command...).
+# The listener uses dots as hierarchy separators, so appName must NOT contain
+# dots -- otherwise Spark misinterprets the job tree and drops schema facets
+# from COMPLETE events.
+#
+# When OPENLINEAGE_NAMESPACE is injected by the Argo workflow controller (via
+# the ConfigMap patch), these Spark-emitted jobs land in the *same* Marquez
+# namespace as the KFP pipeline jobs. The Spark jobs and KFP wrapper jobs
+# (emitted by kfp_lineage) are distinct emitters that connect through shared
+# datasets (e.g. customers.csv as input, warehouse.customer_features as output).
+
 
 def create_spark_session() -> SparkSession:
     return (

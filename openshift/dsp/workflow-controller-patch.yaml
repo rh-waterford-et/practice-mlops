@@ -1,24 +1,34 @@
 # Patch for the DSPA-managed Argo workflow controller ConfigMap.
 #
-# This adds a mainContainer section that injects OPENLINEAGE_NAMESPACE
-# into every pipeline pod via the Kubernetes Downward API.
-# The value is the pod's own namespace (metadata.namespace).
+# WHY: The OpenLineage integrations (Spark listener, Feast emitter, KFP
+#   adapter, MLflow tracking store) all read OPENLINEAGE_NAMESPACE to
+#   determine which Marquez namespace to emit events into. Without this
+#   env var, every event falls into the "default" namespace and lineage
+#   across tools cannot be correlated.
 #
-# Apply with:
-#   kubectl patch configmap ds-pipeline-workflow-controller-dspa \
-#     -n lineage --type merge --patch-file workflow-controller-patch.yaml
+# WHAT: Adds a mainContainer section that injects OPENLINEAGE_NAMESPACE
+#   into every pipeline pod via the Kubernetes Downward API. The value
+#   is the pod's own namespace (metadata.namespace), so it automatically
+#   adapts to whichever OpenShift project the pipeline runs in.
 #
-# Then restart the controller:
-#   kubectl rollout restart deployment/ds-pipeline-workflow-controller-dspa -n lineage
+# APPLY (replace <NAMESPACE> with your project name):
+#   oc patch configmap ds-pipeline-workflow-controller-dspa \
+#     -n <NAMESPACE> --type merge \
+#     --patch-file openshift/dsp/workflow-controller-patch.yaml
 #
-# NOTE: This ConfigMap is owned by the DSPA operator and may be
-# overwritten if the DSPA CR is reapplied. See namespace-injection.md
-# for production alternatives.
+#   oc rollout restart deployment/ds-pipeline-workflow-controller-dspa \
+#     -n <NAMESPACE>
+#
+# CAVEATS:
+#   - This ConfigMap is owned by the DSPA operator and may be overwritten
+#     if the DSPA CR is reapplied. Re-apply the patch after any DSPA update.
+#   - In production OAI, the ds-pipelines-webhook should handle this
+#     injection automatically via mutating admission control, removing
+#     the need for this manual patch entirely.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: ds-pipeline-workflow-controller-dspa
-  namespace: lineage
 data:
   mainContainer: |
     env:

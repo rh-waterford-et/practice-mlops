@@ -1,0 +1,10 @@
+*
+!requirements.txt
+!wheels/
+!openlineage-sdk/
+!openlineage-oai/
+!configs/
+!src/
+!data/customers.csv
+!Dockerfile
+!Dockerfile.spark

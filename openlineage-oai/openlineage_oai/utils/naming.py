@@ -61,33 +61,31 @@ def build_mlflow_job_name(
     experiment_id: str,
     run_name: Optional[str] = None,
     run_id: Optional[str] = None,
+    experiment_name: Optional[str] = None,
 ) -> str:
     """
     Build a job name for MLflow runs.
 
-    Uses experiment ID as context, and prefers run_name over run_id.
+    Uses experiment name when available for a readable Marquez UI label.
 
     Args:
         experiment_id: MLflow experiment ID
-        run_name: Human-readable run name (preferred)
-        run_id: MLflow run ID (fallback)
+        run_name: Human-readable run name (unused, kept for API compat)
+        run_id: MLflow run ID (unused, kept for API compat)
+        experiment_name: Human-readable experiment name (preferred)
 
     Returns:
-        Job name like "mlflow/experiment-123/my-run"
+        Job name like "mlflow-customer-churn-lineage"
 
     Example:
-        >>> build_mlflow_job_name("123", run_name="training-v1")
-        'mlflow/experiment-123/training-v1'
+        >>> build_mlflow_job_name("1", experiment_name="customer_churn_lineage")
+        'mlflow-customer-churn-lineage'
 
-        >>> build_mlflow_job_name("123", run_id="abc-def-123")
-        'mlflow/experiment-123/abc-def-123'
+        >>> build_mlflow_job_name("1")
+        'mlflow-experiment-1'
     """
-    name = run_name or run_id or "unnamed-run"
-    return build_job_name(
-        tool="mlflow",
-        name=name,
-        context=f"experiment-{experiment_id}",
-    )
+    label = experiment_name or f"experiment-{experiment_id}"
+    return f"mlflow-{sanitize_name(label)}"
 
 
 def sanitize_name(name: str) -> str:

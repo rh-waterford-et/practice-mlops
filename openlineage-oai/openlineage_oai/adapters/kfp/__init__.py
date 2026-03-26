@@ -13,6 +13,6 @@ Usage inside a @dsl.component::
 """
 
 from openlineage_oai.adapters.kfp.adapter import KFPAdapter
-from openlineage_oai.adapters.kfp.lineage import kfp_lineage
+from openlineage_oai.adapters.kfp.lineage import kfp_lineage, kfp_output_with_schema
 
-__all__ = ["KFPAdapter", "kfp_lineage"]
+__all__ = ["KFPAdapter", "kfp_lineage", "kfp_output_with_schema"]

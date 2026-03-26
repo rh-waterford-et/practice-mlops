@@ -11,7 +11,7 @@ minio>=7.2.0,<8
 boto3>=1.34.0,<2
 
 # Feast (local fork with OL mapper fix for PostgreSQL data source identity)
-feast[postgres,redis] @ file:///app/wheels/feast-0.60.1.dev32+g33a2e9542.d20260323-py3-none-any.whl
+feast[postgres,redis] @ file:///app/wheels/feast-0.0.0-py3-none-any.whl
 
 # MLflow
 mlflow>=3.10.0,<4

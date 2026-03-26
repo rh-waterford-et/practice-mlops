@@ -119,6 +119,7 @@ class OpenLineageEmitter:
         job_name: str,
         job_namespace: Optional[str] = None,
         inputs: Optional[list[dict[str, Any]]] = None,
+        outputs: Optional[list[dict[str, Any]]] = None,
         run_facets: Optional[dict[str, Any]] = None,
         job_facets: Optional[dict[str, Any]] = None,
     ) -> bool:
@@ -130,6 +131,7 @@ class OpenLineageEmitter:
             job_name: Name of the job
             job_namespace: Job namespace
             inputs: Initial input datasets (if known)
+            outputs: Initial output datasets (if known)
             run_facets: Run facets
             job_facets: Job facets
 
@@ -145,6 +147,7 @@ class OpenLineageEmitter:
             job_name=job_name,
             job_namespace=job_namespace,
             inputs=inputs,
+            outputs=outputs,
             run_facets=run_facets,
             job_facets=job_facets,
         )

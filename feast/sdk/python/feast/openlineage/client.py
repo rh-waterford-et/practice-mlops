@@ -179,13 +179,28 @@ class FeastOpenLineageClient:
         if not self.is_enabled:
             return False
 
+        import os
         from datetime import datetime, timezone
 
         try:
+            merged_facets = dict(run_facets or {})
+            parent_run_id = os.environ.get("OPENLINEAGE_PARENT_RUN_ID", "")
+            parent_job_name = os.environ.get("OPENLINEAGE_PARENT_JOB_NAME", "")
+            if parent_run_id and "parent" not in merged_facets:
+                merged_facets["parent"] = {
+                    "_producer": "https://github.com/feast-dev/feast",
+                    "_schemaURL": "https://openlineage.io/spec/facets/1-0-0/ParentRunFacet.json",
+                    "run": {"runId": parent_run_id},
+                    "job": {
+                        "namespace": os.environ.get("OPENLINEAGE_NAMESPACE", namespace or self.namespace),
+                        "name": parent_job_name or "unknown",
+                    },
+                }
+
             event = RunEvent(
                 eventTime=datetime.now(timezone.utc).isoformat(),
                 eventType=event_type,
-                run=Run(runId=run_id, facets=run_facets or {}),
+                run=Run(runId=run_id, facets=merged_facets),
                 job=Job(
                     namespace=namespace or self.namespace,
                     name=job_name,

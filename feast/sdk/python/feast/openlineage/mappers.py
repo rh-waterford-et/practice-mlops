@@ -118,6 +118,13 @@ def data_source_to_dataset(
         data_source, namespace, source_name, repo_config
     )
 
+    # When referencing a physical data source (e.g. postgres://) as an INPUT,
+    # omit facets so we don't overwrite schema emitted by the authoritative
+    # producer (Spark, etc.).  Marquez merges facets on InputDatasets, and
+    # sending {dataSource, feast_dataSource} without a schema key causes the
+    # existing schema to be dropped.
+    resolved_to_physical = dataset_namespace != namespace
+
     # Build facets
     facets: Dict[str, Any] = {}
 
@@ -153,7 +160,7 @@ def data_source_to_dataset(
         return InputDataset(
             namespace=dataset_namespace,
             name=dataset_name,
-            facets=facets,
+            facets={} if resolved_to_physical else facets,
         )
     else:
         return OutputDataset(

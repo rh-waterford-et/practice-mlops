@@ -1,0 +1,131 @@
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: lineage-webhook
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    component: platform-engineering
+
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: lineage-webhook
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    component: platform-engineering
+spec:
+  source:
+    type: Binary
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+  output:
+    to:
+      kind: ImageStreamTag
+      name: lineage-webhook:latest
+  resources:
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lineage-webhook
+  namespace: lineage
+  labels:
+    app: lineage-webhook
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    component: platform-engineering
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: 8443
+      protocol: TCP
+      name: https
+  selector:
+    app: lineage-webhook
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lineage-webhook
+  namespace: lineage
+  labels:
+    app: lineage-webhook
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    component: platform-engineering
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: lineage-webhook
+  template:
+    metadata:
+      labels:
+        app: lineage-webhook
+    spec:
+      serviceAccountName: lineage-webhook
+      containers:
+        - name: webhook
+          image: image-registry.openshift-image-registry.svc:5000/lineage/lineage-webhook:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8443
+              name: https
+          env:
+            - name: LINEAGE_INIT_IMAGE
+              value: "image-registry.openshift-image-registry.svc:5000/lineage/lineage-init-container:latest"
+            - name: OPENLINEAGE_URL
+              value: "http://marquez"
+            - name: TLS_CERT_FILE
+              value: "/etc/webhook/certs/tls.crt"
+            - name: TLS_KEY_FILE
+              value: "/etc/webhook/certs/tls.key"
+          volumeMounts:
+            - name: webhook-certs
+              mountPath: /etc/webhook/certs
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: webhook-certs
+          secret:
+            secretName: lineage-webhook-certs
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lineage-webhook
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    component: platform-engineering

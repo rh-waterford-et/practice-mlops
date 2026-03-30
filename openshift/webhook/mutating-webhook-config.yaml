@@ -1,0 +1,41 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: lineage-webhook
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    component: platform-engineering
+webhooks:
+  - name: lineage.ai.platform
+    admissionReviewVersions:
+      - v1
+      - v1beta1
+    clientConfig:
+      service:
+        name: lineage-webhook
+        namespace: lineage
+        path: "/mutate"
+        port: 443
+      # Replace CA_BUNDLE_PLACEHOLDER with actual CA bundle from generate-webhook-certs.sh
+      caBundle: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURMVENDQWhXZ0F3SUJBZ0lVTE5ONi9zL0RxMkt5dEVaTXBVc3RtaHNwOGlBd0RRWUpLb1pJaHZjTkFRRUwKQlFBd0pqRWtNQ0lHQTFVRUF3d2JiR2x1WldGblpTMTNaV0pvYjI5ckxteHBibVZoWjJVdWMzWmpNQjRYRFRJMgpNRE15TmpFME16SXpNMW9YRFRNMk1ETXlNekUwTXpJek0xb3dKakVrTUNJR0ExVUVBd3diYkdsdVpXRm5aUzEzClpXSm9iMjlyTG14cGJtVmhaMlV1YzNaak1JSUJJakFOQmdrcWhraUc5dzBCQVFFRkFBT0NBUThBTUlJQkNnS0MKQVFFQTMwbktnUnU4aHVUL1JEeVB6a0o4Rld5clphSk9xNE9lRE91Y3VEeGhWRjJ6WnY1c0pYS3Z1YkZkUVJtbwpyR1NkK2hnSUNXQUdmR1pqVnU2ZEtTSndXdGR5WGxuNi9vTDdLUGdpSFRmaDBiT1IyK1ovQmFKbkFVVjV4ZnNMCjJ2emFBKzE3N2h1VDUwNzIxSVRmM3BuVVVSUm52bWhmZ094ejBFRWdIQXA5NHV6OXNyK01aVU5tbGllWE9IeDUKYWY5OU1HeFIwTUR2UnZSMVdncUhxWmdBSUdubUkrRHZRUDAzUzZHOHpOVnhoSkhxencvZWpXMHZES1JIWHgxMwpIOWdtSk1rSGhtdjJpYWZhSEY4M2JyNXpqTzZkY25zU0Y5N0hZOHdNTzdidnJQVUM0L3NLeW5wNjJDMG5UMkJVClczMkxpV0xsd1R6K2ZrQWVIQkd6djFQQ1B3SURBUUFCbzFNd1VUQWRCZ05WSFE0RUZnUVV2SHVFSmdsZzE1aVoKdDQ5OE9RSjBidjBCbGpzd0h3WURWUjBqQkJnd0ZvQVV2SHVFSmdsZzE1aVp0NDk4T1FKMGJ2MEJsanN3RHdZRApWUjBUQVFIL0JBVXdBd0VCL3pBTkJna3Foa2lHOXcwQkFRc0ZBQU9DQVFFQXpmK09SVVpvQ3VJRi95aTJPSHpQCk56am1yWmUxZjZoUjVtQjh4ajZiYnU2NnlESUdWYjJLWXd4d1lWRi82VUQwZm11ZkNZby96T1NPaGp5UFREU2QKTjY1dHR0cmFXVGN2OEZsMzFpVW1YalZRSm1vR0tlVi9pTE1xUklQa0xTaTFZUWRVWEd2dVR0TDI3WmQ3cHo0YgpLa0ZzbUZtYzNGUEljVUdCaWdwTHVzMjdTL2hMYWsyd1VlaHBxZ3M0SDF1ZUZOQStLMGQ5R3ZnbXhsUmdhOUNxCm9kTm5xK29JRWtBK0FFd2JuMnlDOTFPTlZRaHpLREZHRDZ6WkRHakR5NnNVUlI4aGpGOVVZS21QZmZadTF6UzUKZVRtdnNnVEV0RDFBcm1OaGNBTS9aUnorSHoxZHBTOEZTcVdSallzYngvVVc4VWhra2xmQnNzZy9pY3FCYXNrWApHUT09Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        scope: "Namespaced"
+    # Only mutate pods with the lineage-enabled annotation
+    objectSelector:
+       matchLabels:
+        lineage-enabled: "true"
+    namespaceSelector:
+      matchExpressions:
+        # Exclude OpenShift system namespaces
+        # System namespaces have openshift.io/cluster-monitoring=true
+        - key: openshift.io/cluster-monitoring
+          operator: DoesNotExist
+    sideEffects: None
+    timeoutSeconds: 10
+    failurePolicy: Ignore  # Don't block pod creation if webhook fails
+    reinvocationPolicy: Never

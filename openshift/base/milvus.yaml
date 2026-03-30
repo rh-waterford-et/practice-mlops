@@ -1,0 +1,167 @@
+---
+# Milvus Standalone Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: milvus
+  namespace: lineage
+  labels:
+    app: milvus
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: milvus
+  template:
+    metadata:
+      labels:
+        app: milvus
+    spec:
+      # Init container to prepare data directories
+      initContainers:
+        - name: prepare-dirs
+          image: image-registry.openshift-image-registry.svc:5000/lineage/milvus:v2.3.4
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /var/lib/milvus/etcd /var/lib/milvus/minio /var/lib/milvus/data /var/lib/milvus/rdb_data || true
+              echo "Created directories:"
+              ls -la /var/lib/milvus
+          volumeMounts:
+            - name: milvus-data
+              mountPath: /var/lib/milvus
+      containers:
+        # MinIO sidecar for object storage
+        - name: minio
+          image: quay.io/minio/minio:latest
+          command:
+            - minio
+            - server
+            - /data
+          ports:
+            - containerPort: 9000
+              name: api
+          env:
+            - name: MINIO_ROOT_USER
+              value: "minioadmin"
+            - name: MINIO_ROOT_PASSWORD
+              value: "minioadmin"
+          volumeMounts:
+            - name: milvus-data
+              mountPath: /data
+              subPath: minio
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+        # Milvus main container
+        - name: milvus
+          image: image-registry.openshift-image-registry.svc:5000/lineage/milvus:v2.3.4
+          command:
+            - milvus
+            - run
+            - standalone
+          ports:
+            - name: grpc
+              containerPort: 19530
+              protocol: TCP
+            - name: metrics
+              containerPort: 9091
+              protocol: TCP
+          env:
+            # Embedded etcd configuration
+            - name: ETCD_USE_EMBED
+              value: "true"
+            - name: ETCD_DATA_DIR
+              value: "/var/lib/milvus/etcd"
+            # MinIO configuration (sidecar)
+            - name: MINIO_ADDRESS
+              value: "localhost:9000"
+            - name: MINIO_ACCESS_KEY_ID
+              value: "minioadmin"
+            - name: MINIO_SECRET_ACCESS_KEY
+              value: "minioadmin"
+            - name: MINIO_USE_SSL
+              value: "false"
+            - name: MINIO_BUCKET_NAME
+              value: "milvus-bucket"
+            # Message Queue - RocketMQ for standalone
+            - name: ROCKSMQ_PATH
+              value: "/var/lib/milvus/rdb_data"
+            # Common configuration
+            - name: COMMON_STORAGETYPE
+              value: "minio"
+          volumeMounts:
+            - name: milvus-data
+              mountPath: /var/lib/milvus
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9091
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9091
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 10
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: milvus-data
+          persistentVolumeClaim:
+            claimName: milvus-data
+
+---
+# Milvus Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: milvus
+  namespace: lineage
+  labels:
+    app: milvus
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  type: ClusterIP
+  ports:
+    - name: grpc
+      port: 19530
+      targetPort: 19530
+      protocol: TCP
+    - name: metrics
+      port: 9091
+      targetPort: 9091
+      protocol: TCP
+  selector:
+    app: milvus
+
+---
+# PersistentVolumeClaim for Milvus data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: milvus-data
+  namespace: lineage
+  labels:
+    app: milvus
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi

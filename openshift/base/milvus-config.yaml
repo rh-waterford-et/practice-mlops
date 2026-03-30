@@ -1,0 +1,43 @@
+---
+# ConfigMap for Milvus configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: milvus-config
+  namespace: lineage
+  labels:
+    app: milvus
+data:
+  milvus.yaml: |
+    # Milvus standalone configuration - simplified
+    etcd:
+      endpoints:
+        - localhost:2379
+      rootPath: by-dev
+      use:
+        embed: true
+      data:
+        dir: /var/lib/milvus/etcd
+
+    minio:
+      address: localhost
+      port: 9000
+      accessKeyID: minioadmin
+      secretAccessKey: minioadmin
+      useSSL: false
+      bucketName: milvus-bucket
+      rootPath: files
+      useIAM: false
+
+    # Message Queue - RocketMQ for standalone mode
+    rocksmq:
+      path: /var/lib/milvus/rdb_data
+
+    # Main proxy port
+    proxy:
+      port: 19530
+
+    log:
+      level: info
+      file:
+        rootPath: /var/lib/milvus/logs

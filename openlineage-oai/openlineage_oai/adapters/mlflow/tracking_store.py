@@ -447,7 +447,7 @@ class OpenLineageTrackingStore:
                 signature = model_info.get("signature", {})
 
                 # Build model dataset name
-                model_name = f"model/{artifact_path}"
+                model_name = f"model.{artifact_path}"
 
                 # Build facets
                 model_facets = {
@@ -590,7 +590,7 @@ class OpenLineageTrackingStore:
                         # Extract model info
                         output_model = {
                             "namespace": self._namespace,
-                            "name": f"model/{getattr(model, 'name', 'unknown')}",
+                            "name": f"model.{getattr(model, 'name', 'unknown')}",
                             "facets": {},
                         }
                         self._run_states[run_id].outputs.append(output_model)
@@ -617,7 +617,7 @@ class OpenLineageTrackingStore:
             for output in models:
                 try:
                     # Extract model info
-                    model_name = f"model/{getattr(output, 'artifact_path', 'model')}"
+                    model_name = f"model.{getattr(output, 'artifact_path', 'model')}"
 
                     model_facets = {
                         "mlflow_model": {

@@ -94,7 +94,7 @@ def load_documents(
     # Input: grouped MinIO bucket prefix (all files as single source)
     input_dataset = Dataset(
         namespace=f"s3://{minio_endpoint}",
-        name=f"{bucket_name}/{prefix}",
+        name=f"{bucket_name}.{prefix.rstrip('/')}",
         facets={
             "schema": SchemaDatasetFacet(
                 fields=[
@@ -108,7 +108,7 @@ def load_documents(
     # Output: documents JSON dataset (stored as KFP artifact in MinIO)
     output_dataset = Dataset(
         namespace=f"s3://{minio_endpoint}",
-        name="mlflow/artifacts/rag-ingestion/documents",
+        name="mlflow.artifacts.rag-ingestion.documents",
         facets={
             "schema": SchemaDatasetFacet(
                 fields=[
@@ -227,13 +227,13 @@ def chunk_documents(
 
     input_dataset = Dataset(
         namespace=f"s3://{minio_endpoint}",
-        name="mlflow/artifacts/rag-ingestion/documents",
+        name="mlflow.artifacts.rag-ingestion.documents",
         facets={},
     )
 
     output_dataset = Dataset(
         namespace=f"s3://{minio_endpoint}",
-        name="mlflow/artifacts/rag-ingestion/chunks",
+        name="mlflow.artifacts.rag-ingestion.chunks",
         facets={
             "schema": SchemaDatasetFacet(
                 fields=[
@@ -322,13 +322,13 @@ def generate_embeddings(
 
     input_dataset = Dataset(
         namespace=f"s3://{minio_endpoint}",
-        name="mlflow/artifacts/rag-ingestion/chunks",
+        name="mlflow.artifacts.rag-ingestion.chunks",
         facets={},
     )
 
     output_dataset = Dataset(
         namespace=f"s3://{minio_endpoint}",
-        name="mlflow/artifacts/rag-ingestion/embeddings",
+        name="mlflow.artifacts.rag-ingestion.embeddings",
         facets={
             "schema": SchemaDatasetFacet(
                 fields=[
@@ -493,7 +493,7 @@ def store_in_milvus(
     # Input: embeddings from previous step (stored in MinIO as KFP artifact)
     input_dataset = Dataset(
         namespace=f"s3://{minio_endpoint}",
-        name="mlflow/artifacts/rag-ingestion/embeddings",
+        name="mlflow.artifacts.rag-ingestion.embeddings",
         facets={},
     )
 
@@ -553,6 +553,92 @@ def store_in_milvus(
         "metric_type": "COSINE",
         "openlineage_run_id": run_id,
     })
+
+
+# =======================================================================
+# STEP 5: Test Inference (connects RAG + ML branches via shared datasets)
+# =======================================================================
+@dsl.component(base_image=FKM_IMAGE, packages_to_install=[])
+def test_inference(
+    inference_url: str,
+    milvus_host: str,
+    milvus_port: int,
+    milvus_collection: str,
+    openlineage_url: str,
+    store_done: str,
+) -> str:
+    """Call the RAG inference service and emit OL event linking both pipelines."""
+    import json
+    import os
+    from datetime import datetime, timezone
+    from uuid import uuid4
+    import requests
+    from openlineage.client import OpenLineageClient
+    from openlineage.client.run import RunEvent, RunState, Run, Job, Dataset
+    from openlineage.client.facet import SchemaDatasetFacet, SchemaField
+
+    namespace = os.environ.get("OPENLINEAGE_NAMESPACE", "default")
+    feast_project = namespace.replace("-", "_")
+
+    # Call inference service
+    query = "What are the best practices for feature engineering in MLOps?"
+    print(f"Calling inference service at {inference_url}")
+    try:
+        resp = requests.post(
+            f"{inference_url}/query",
+            json={"query": query, "top_k": 3},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        print(f"Inference response: {json.dumps(result, indent=2)[:500]}")
+    except Exception as e:
+        print(f"Inference call failed (non-fatal): {e}")
+        result = {"error": str(e), "query": query}
+
+    # Emit OpenLineage event showing inference consumes both pipelines' outputs
+    ol_client = OpenLineageClient(url=openlineage_url)
+    run_id = str(uuid4())
+
+    milvus_input = Dataset(
+        namespace=f"milvus://{milvus_host}:{milvus_port}",
+        name=milvus_collection,
+        facets={},
+    )
+
+    feast_input = Dataset(
+        namespace=feast_project,
+        name="online_store_customer_features_view",
+        facets={},
+    )
+
+    output_dataset = Dataset(
+        namespace=namespace,
+        name="rag_inference_result",
+        facets={
+            "schema": SchemaDatasetFacet(
+                fields=[
+                    SchemaField(name="query", type="STRING"),
+                    SchemaField(name="response", type="STRING"),
+                    SchemaField(name="sources", type="ARRAY<STRING>"),
+                ]
+            ),
+        },
+    )
+
+    event = RunEvent(
+        eventType=RunState.COMPLETE,
+        eventTime=datetime.now(timezone.utc).isoformat(),
+        run=Run(runId=run_id, facets={}),
+        job=Job(namespace=namespace, name="rag_inference", facets={}),
+        inputs=[milvus_input, feast_input],
+        outputs=[output_dataset],
+        producer="rag-inference-pipeline/test",
+    )
+    ol_client.emit(event)
+    print(f"OpenLineage event emitted: {namespace}/rag_inference")
+
+    return json.dumps(result)
 
 
 # =======================================================================

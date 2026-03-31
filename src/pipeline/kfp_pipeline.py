@@ -17,10 +17,10 @@ from kfp import kubernetes
 # The fkm-app image built via OpenShift BuildConfig contains all deps.
 # Override at pipeline-creation time via the `image` parameter.
 FKM_IMAGE = (
-    "image-registry.openshift-image-registry.svc:5000/lineage-ben/fkm-app:latest"
+    "image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest"
 )
 SPARK_IMAGE = (
-    "image-registry.openshift-image-registry.svc:5000/lineage-ben/spark-etl:latest"
+    "image-registry.openshift-image-registry.svc:5000/lineage/spark-etl:latest"
 )
 
 
@@ -384,7 +384,7 @@ def ds_model_training(
     with kfp_lineage(
         "kfp-model_training",
         inputs=[dataset],
-        outputs=[{"namespace": ol_namespace, "name": "model/model"}],
+        outputs=[{"namespace": ol_namespace, "name": "model.model"}],
         url="http://marquez",
     ):
         df = pd.read_parquet(dataset.path)
@@ -466,7 +466,7 @@ def ds_evaluation(train_result_json: str) -> str:
 
     with kfp_lineage(
         "kfp-evaluation",
-        inputs=[{"namespace": ol_namespace, "name": "model/model"}],
+        inputs=[{"namespace": ol_namespace, "name": "model.model"}],
         outputs=[],
         url="http://marquez",
     ):
@@ -512,8 +512,8 @@ def ds_model_registration(
 
     with kfp_lineage(
         "kfp-model_registration",
-        inputs=[{"namespace": ol_namespace, "name": "model/model"}],
-        outputs=[{"namespace": "mlflow", "name": f"models:/{model_name}"}],
+        inputs=[{"namespace": ol_namespace, "name": "model.model"}],
+        outputs=[{"namespace": "mlflow", "name": f"models.{model_name}"}],
         url="http://marquez",
     ):
         result = json.loads(train_result_json)

@@ -6,5 +6,6 @@
 !configs/
 !src/
 !data/customers.csv
+!data/sample_docs/
 !Dockerfile
 !Dockerfile.spark

@@ -268,4 +268,4 @@ def build_model_name(run_id: str, artifact_path: str) -> str:
     Returns:
         Name string like "runs/abc-123/artifacts/model"
     """
-    return f"runs/{run_id}/artifacts/{artifact_path}"
+    return f"runs.{run_id}.artifacts.{artifact_path}"

@@ -1,0 +1,1634 @@
+# PIPELINE DEFINITION
+# Name: full-ml-rag-pipeline
+# Description: Combined pipeline: Customer Churn ML (Spark ETL, Feast, XGBoost/MLflow) followed by RAG document ingestion (load, chunk, embed, Milvus). All steps emit OpenLineage events.
+# Inputs:
+#    aws_key: str [Default: 'minioadmin']
+#    aws_secret: str [Default: 'minioadmin123']
+#    experiment_name: str [Default: 'customer_churn_lineage']
+#    feast_repo_path: str [Default: '/app/src/feature_store']
+#    milvus_collection: str [Default: 'ml_docs']
+#    milvus_host: str [Default: 'milvus']
+#    milvus_port: int [Default: 19530.0]
+#    model_name: str [Default: 'customer_churn_model']
+#    pg_host: str [Default: 'postgres']
+#    pg_url: str [Default: 'postgresql://feast:feast@postgres:5432/warehouse']
+#    rag_bucket_name: str [Default: 'data']
+#    rag_chunk_overlap: int [Default: 200.0]
+#    rag_chunk_size: int [Default: 1000.0]
+#    rag_document_prefix: str [Default: 'sample_docs/']
+#    rag_embedding_model: str [Default: 'all-MiniLM-L6-v2']
+#    redis_host: str [Default: 'redis']
+#    roc_auc_threshold: float [Default: 0.7]
+#    s3_endpoint: str [Default: 'http://mlflow-minio:9000']
+#    table_name: str [Default: 'customer_features']
+#    tracking_uri: str [Default: 'openlineage+http://mlflow-server:5000']
+components:
+  comp-chunk-documents:
+    executorLabel: exec-chunk-documents
+    inputDefinitions:
+      artifacts:
+        input_docs:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        chunk_overlap:
+          parameterType: NUMBER_INTEGER
+        chunk_size:
+          parameterType: NUMBER_INTEGER
+        minio_endpoint:
+          parameterType: STRING
+        openlineage_url:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        output_chunks:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        Output:
+          parameterType: NUMBER_INTEGER
+  comp-ds-data-extraction:
+    executorLabel: exec-ds-data-extraction
+    inputDefinitions:
+      parameters:
+        feast_repo_path:
+          parameterType: STRING
+        materialize_done:
+          parameterType: STRING
+        pg_host:
+          parameterType: STRING
+        pg_url:
+          parameterType: STRING
+        redis_host:
+          parameterType: STRING
+        table_name:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        output_path:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-ds-evaluation:
+    executorLabel: exec-ds-evaluation
+    inputDefinitions:
+      parameters:
+        train_result_json:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-ds-feature-engineering:
+    executorLabel: exec-ds-feature-engineering
+    inputDefinitions:
+      artifacts:
+        dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        output_path:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-ds-model-registration:
+    executorLabel: exec-ds-model-registration
+    inputDefinitions:
+      parameters:
+        aws_key:
+          parameterType: STRING
+        aws_secret:
+          parameterType: STRING
+        metrics_json:
+          parameterType: STRING
+        model_name:
+          parameterType: STRING
+        roc_auc_threshold:
+          parameterType: NUMBER_DOUBLE
+        s3_endpoint:
+          parameterType: STRING
+        tracking_uri:
+          parameterType: STRING
+        train_result_json:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-ds-model-training:
+    executorLabel: exec-ds-model-training
+    inputDefinitions:
+      artifacts:
+        dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        aws_key:
+          parameterType: STRING
+        aws_secret:
+          parameterType: STRING
+        experiment_name:
+          parameterType: STRING
+        s3_endpoint:
+          parameterType: STRING
+        tracking_uri:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-generate-embeddings:
+    executorLabel: exec-generate-embeddings
+    inputDefinitions:
+      artifacts:
+        input_chunks:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        minio_endpoint:
+          parameterType: STRING
+        model_name:
+          parameterType: STRING
+        openlineage_url:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        output_embeddings:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-load-documents:
+    executorLabel: exec-load-documents
+    inputDefinitions:
+      parameters:
+        aws_key:
+          parameterType: STRING
+        aws_secret:
+          parameterType: STRING
+        bucket_name:
+          parameterType: STRING
+        minio_endpoint:
+          parameterType: STRING
+        openlineage_url:
+          parameterType: STRING
+        prefix:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        output_docs:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        Output:
+          parameterType: NUMBER_INTEGER
+  comp-platform-feast-apply:
+    executorLabel: exec-platform-feast-apply
+    inputDefinitions:
+      parameters:
+        feast_repo_path:
+          parameterType: STRING
+        pg_host:
+          parameterType: STRING
+        redis_host:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-platform-feast-materialize:
+    executorLabel: exec-platform-feast-materialize
+    inputDefinitions:
+      parameters:
+        apply_done:
+          parameterType: STRING
+        feast_repo_path:
+          parameterType: STRING
+        pg_host:
+          parameterType: STRING
+        redis_host:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-platform-spark-etl:
+    executorLabel: exec-platform-spark-etl
+    inputDefinitions:
+      parameters:
+        aws_access_key:
+          parameterType: STRING
+        aws_secret_key:
+          parameterType: STRING
+        minio_endpoint:
+          parameterType: STRING
+        openlineage_url:
+          parameterType: STRING
+        pg_database:
+          parameterType: STRING
+        pg_host:
+          parameterType: STRING
+        pg_password:
+          parameterType: STRING
+        pg_user:
+          parameterType: STRING
+        warehouse_table:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-store-in-milvus:
+    executorLabel: exec-store-in-milvus
+    inputDefinitions:
+      artifacts:
+        input_embeddings:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        collection_name:
+          parameterType: STRING
+        milvus_host:
+          parameterType: STRING
+        milvus_port:
+          parameterType: NUMBER_INTEGER
+        minio_endpoint:
+          parameterType: STRING
+        openlineage_url:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-test-inference:
+    executorLabel: exec-test-inference
+    inputDefinitions:
+      parameters:
+        inference_url:
+          parameterType: STRING
+        milvus_collection:
+          parameterType: STRING
+        milvus_host:
+          parameterType: STRING
+        milvus_port:
+          parameterType: NUMBER_INTEGER
+        openlineage_url:
+          parameterType: STRING
+        store_done:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-chunk-documents:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - chunk_documents
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef chunk_documents(\n    input_docs: dsl.Input[dsl.Dataset],\n \
+          \   chunk_size: int,\n    chunk_overlap: int,\n    minio_endpoint: str,\n\
+          \    openlineage_url: str,\n    output_chunks: dsl.Output[dsl.Dataset],\n\
+          ) -> int:\n    \"\"\"Split documents into chunks with overlap.\"\"\"\n \
+          \   import json\n    import gc\n    import os\n    from datetime import\
+          \ datetime, timezone\n    from uuid import uuid4\n    from openlineage.client\
+          \ import OpenLineageClient\n    from openlineage.client.run import RunEvent,\
+          \ RunState, Run, Job, Dataset\n    from openlineage.client.facet import\
+          \ SchemaDatasetFacet, SchemaField, OutputStatisticsOutputDatasetFacet\n\n\
+          \    # Load documents\n    with open(input_docs.path) as f:\n        documents\
+          \ = json.load(f)\n\n    print(f\"Loaded {len(documents)} documents\")\n\n\
+          \    # Process one document at a time and write incrementally to save memory\n\
+          \    chunks = []\n    chunk_id = 0\n    total_chars = 0\n\n    for idx,\
+          \ doc in enumerate(documents):\n        content = doc[\"content\"]\n   \
+          \     doc_chunks = []\n\n        # Simple character-based chunking\n   \
+          \     start = 0\n        while start < len(content):\n            end =\
+          \ min(start + chunk_size, len(content))\n            chunk_text = content[start:end]\n\
+          \n            # Try to break at sentence boundaries if possible\n      \
+          \      if end < len(content):\n                # Look for last period, newline,\
+          \ or space\n                for delimiter in ['. ', '\\n\\n', '\\n', ' ']:\n\
+          \                    last_delim = chunk_text.rfind(delimiter)\n        \
+          \            if last_delim > chunk_size // 2:  # At least halfway through\n\
+          \                        end = start + last_delim + len(delimiter)\n   \
+          \                     chunk_text = content[start:end]\n                \
+          \        break\n\n            chunk_stripped = chunk_text.strip()\n    \
+          \        doc_chunks.append({\n                \"chunk_id\": chunk_id,\n\
+          \                \"source\": doc[\"source\"],\n                \"filename\"\
+          : doc[\"filename\"],\n                \"text\": chunk_stripped,\n      \
+          \          \"start_char\": start,\n                \"end_char\": end,\n\
+          \            })\n            total_chars += len(chunk_stripped)\n\n    \
+          \        chunk_id += 1\n            start = max(end - chunk_overlap, start\
+          \ + 1)\n\n        chunks.extend(doc_chunks)\n        print(f\"Processed\
+          \ document {idx + 1}/{len(documents)}: {len(doc_chunks)} chunks\")\n\n \
+          \       # Clear references to free memory\n        del doc_chunks\n    \
+          \    del content\n        gc.collect()\n\n    # Save chunks\n    print(f\"\
+          Writing {len(chunks)} total chunks to output\")\n    with open(output_chunks.path,\
+          \ 'w') as f:\n        json.dump(chunks, f)\n\n    # Emit OpenLineage event\n\
+          \    namespace = os.environ.get(\"OPENLINEAGE_NAMESPACE\", \"default\")\n\
+          \    ol_client = OpenLineageClient(url=openlineage_url)\n    run_id = str(uuid4())\n\
+          \n    input_dataset = Dataset(\n        namespace=f\"s3://{minio_endpoint}\"\
+          ,\n        name=\"mlflow.artifacts.rag-ingestion.documents\",\n        facets={},\n\
+          \    )\n\n    output_dataset = Dataset(\n        namespace=f\"s3://{minio_endpoint}\"\
+          ,\n        name=\"mlflow.artifacts.rag-ingestion.chunks\",\n        facets={\n\
+          \            \"schema\": SchemaDatasetFacet(\n                fields=[\n\
+          \                    SchemaField(name=\"chunk_id\", type=\"INTEGER\"),\n\
+          \                    SchemaField(name=\"source\", type=\"STRING\"),\n  \
+          \                  SchemaField(name=\"filename\", type=\"STRING\"),\n  \
+          \                  SchemaField(name=\"text\", type=\"TEXT\"),\n        \
+          \            SchemaField(name=\"start_char\", type=\"INTEGER\"),\n     \
+          \               SchemaField(name=\"end_char\", type=\"INTEGER\"),\n    \
+          \            ]\n            ),\n            \"outputStatistics\": OutputStatisticsOutputDatasetFacet(\n\
+          \                rowCount=len(chunks),\n                size=total_chars,\n\
+          \            ),\n        },\n    )\n\n    event = RunEvent(\n        eventType=RunState.COMPLETE,\n\
+          \        eventTime=datetime.now(timezone.utc).isoformat(),\n        run=Run(runId=run_id,\
+          \ facets={}),\n        job=Job(namespace=namespace, name=\"rag_chunk_documents\"\
+          , facets={}),\n        inputs=[input_dataset],\n        outputs=[output_dataset],\n\
+          \        producer=\"rag-ingestion-pipeline/chunk\",\n    )\n    ol_client.emit(event)\n\
+          \    print(f\"OpenLineage event emitted: {namespace}/rag_chunk_documents\"\
+          )\n\n    del chunks\n    gc.collect()\n\n    print(f\"Created {chunk_id}\
+          \ chunks from {len(documents)} documents\")\n    return chunk_id\n\n"
+        env:
+        - name: OPENLINEAGE_PARENT_JOB_NAME
+          value: full-ml-rag-pipeline
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-ds-data-extraction:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - ds_data_extraction
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef ds_data_extraction(\n    pg_url: str,\n    feast_repo_path: str,\n\
+          \    table_name: str,\n    pg_host: str,\n    redis_host: str,\n    materialize_done:\
+          \ str,\n    output_path: dsl.Output[dsl.Dataset],\n) -> None:\n    \"\"\"\
+          Retrieve historical features from Feast and save as parquet.\"\"\"\n   \
+          \ import os\n\n    import pandas as pd\n    from sqlalchemy import create_engine,\
+          \ text\n    from feast import FeatureStore\n    from openlineage_oai.adapters.kfp\
+          \ import kfp_lineage, kfp_output_with_schema\n\n    ol_namespace = os.environ.get(\"\
+          OPENLINEAGE_NAMESPACE\", \"default\")\n    feast_project = ol_namespace.replace(\"\
+          -\", \"_\")\n    fs_yaml = os.path.join(feast_repo_path, \"feature_store.yaml\"\
+          )\n    with open(fs_yaml, \"w\") as f:\n        f.write(f\"\"\"\\\nproject:\
+          \ {feast_project}\nprovider: local\nregistry:\n  registry_type: sql\n  path:\
+          \ postgresql://feast:feast@{pg_host}:5432/warehouse\n  cache_ttl_seconds:\
+          \ 60\noffline_store:\n  type: postgres\n  host: {pg_host}\n  port: 5432\n\
+          \  database: warehouse\n  db_schema: public\n  user: feast\n  password:\
+          \ feast\nonline_store:\n  type: redis\n  connection_string: {redis_host}:6379\n\
+          entity_key_serialization_version: 2\nopenlineage:\n  enabled: true\n  transport_type:\
+          \ http\n  transport_url: http://marquez\n  emit_on_apply: true\n  emit_on_materialize:\
+          \ true\n\"\"\")\n    print(f\"Patched {fs_yaml} -> pg={pg_host}, redis={redis_host},\
+          \ ol_ns={ol_namespace}\")\n\n    with kfp_lineage(\n        \"kfp-data_extraction\"\
+          ,\n        inputs=[{\"namespace\": f\"postgres://{pg_host}:5432\", \"name\"\
+          : \"warehouse.customer_features_view\"}],\n        outputs=[],\n       \
+          \ url=\"http://marquez\",\n    ) as run:\n        engine = create_engine(pg_url)\n\
+          \        with engine.connect() as conn:\n            entity_df = pd.read_sql(\n\
+          \                text(f\"SELECT entity_id, event_timestamp, churn FROM {table_name}\"\
+          ),\n                conn,\n            )\n        engine.dispose()\n   \
+          \     entity_df[\"event_timestamp\"] = pd.to_datetime(\n            entity_df[\"\
+          event_timestamp\"], utc=True,\n        )\n\n        store = FeatureStore(repo_path=feast_repo_path)\n\
+          \        features = [\n            \"customer_features_view:tenure_months\"\
+          ,\n            \"customer_features_view:monthly_charges\",\n           \
+          \ \"customer_features_view:total_charges\",\n            \"customer_features_view:num_support_tickets\"\
+          ,\n            \"customer_features_view:contract_type\",\n            \"\
+          customer_features_view:internet_service\",\n            \"customer_features_view:payment_method\"\
+          ,\n        ]\n        features_df = store.get_historical_features(\n   \
+          \         entity_df=entity_df[[\"entity_id\", \"event_timestamp\"]],\n \
+          \           features=features,\n        ).to_df()\n\n        for df_ in\
+          \ (features_df, entity_df):\n            df_[\"event_timestamp\"] = pd.to_datetime(\n\
+          \                df_[\"event_timestamp\"], utc=True,\n            )\n\n\
+          \        result = features_df.merge(\n            entity_df[[\"entity_id\"\
+          , \"event_timestamp\", \"churn\"]],\n            on=[\"entity_id\", \"event_timestamp\"\
+          ],\n            how=\"left\",\n        )\n        print(f\"DS: data extraction\
+          \ complete - shape {result.shape}\")\n        result.to_parquet(output_path.path)\n\
+          \        run.add_output(kfp_output_with_schema(output_path, result))\n\n"
+        env:
+        - name: OPENLINEAGE_PARENT_JOB_NAME
+          value: full-ml-rag-pipeline
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-ds-evaluation:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - ds_evaluation
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef ds_evaluation(train_result_json: str) -> str:\n    \"\"\"Display\
+          \ and return evaluation metrics.\"\"\"\n    import json\n    import os\n\
+          \    from openlineage_oai.adapters.kfp import kfp_lineage\n\n    ol_namespace\
+          \ = os.environ.get(\"OPENLINEAGE_NAMESPACE\", \"default\")\n\n    with kfp_lineage(\n\
+          \        \"kfp-evaluation\",\n        inputs=[{\"namespace\": ol_namespace,\
+          \ \"name\": \"model.model\"}],\n        outputs=[],\n        url=\"http://marquez\"\
+          ,\n    ):\n        result = json.loads(train_result_json)\n        m = result[\"\
+          metrics\"]\n        print(\n            f\"DS: evaluation  ROC-AUC={m['roc_auc']:.4f}\
+          \  F1={m['f1']:.4f}  \"\n            f\"Precision={m['precision']:.4f} \
+          \ Recall={m['recall']:.4f}\"\n        )\n        return json.dumps(m)\n\n"
+        env:
+        - name: OPENLINEAGE_PARENT_JOB_NAME
+          value: full-ml-rag-pipeline
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-ds-feature-engineering:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - ds_feature_engineering
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef ds_feature_engineering(\n    dataset: dsl.Input[dsl.Dataset],\n\
+          \    output_path: dsl.Output[dsl.Dataset],\n) -> None:\n    \"\"\"Add derived\
+          \ features.\"\"\"\n    import numpy as np\n    import pandas as pd\n   \
+          \ from openlineage_oai.adapters.kfp import kfp_lineage, kfp_output_with_schema\n\
+          \n    with kfp_lineage(\n        \"kfp-feature_engineering\",\n        inputs=[dataset],\n\
+          \        outputs=[],\n        url=\"http://marquez\",\n    ) as run:\n \
+          \       df = pd.read_parquet(dataset.path)\n        tenure_safe = df[\"\
+          tenure_months\"].replace(0, 1)\n        df[\"charges_per_month\"] = df[\"\
+          total_charges\"] / tenure_safe\n        df[\"ticket_rate\"] = df[\"num_support_tickets\"\
+          ] / tenure_safe\n\n        for col in [\"charges_per_month\", \"ticket_rate\"\
+          ]:\n            df[col] = df[col].replace([np.inf, -np.inf], 0.0)\n\n  \
+          \      print(f\"DS: feature engineering complete - shape {df.shape}\")\n\
+          \        df.to_parquet(output_path.path)\n        run.add_output(kfp_output_with_schema(output_path,\
+          \ df))\n\n"
+        env:
+        - name: OPENLINEAGE_PARENT_JOB_NAME
+          value: full-ml-rag-pipeline
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-ds-model-registration:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - ds_model_registration
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef ds_model_registration(\n    train_result_json: str,\n    metrics_json:\
+          \ str,\n    model_name: str,\n    tracking_uri: str,\n    s3_endpoint: str,\n\
+          \    aws_key: str,\n    aws_secret: str,\n    roc_auc_threshold: float,\n\
+          ) -> str:\n    \"\"\"Register model in MLflow if metrics beat the threshold.\"\
+          \"\"\n    import json\n    import os\n\n    import mlflow\n    from mlflow.tracking\
+          \ import MlflowClient\n    from openlineage_oai.adapters.kfp import kfp_lineage\n\
+          \n    os.environ[\"MLFLOW_S3_ENDPOINT_URL\"] = s3_endpoint\n    os.environ[\"\
+          AWS_ACCESS_KEY_ID\"] = aws_key\n    os.environ[\"AWS_SECRET_ACCESS_KEY\"\
+          ] = aws_secret\n\n    plain_uri = tracking_uri.replace(\"openlineage+\"\
+          , \"\")\n    os.environ[\"MLFLOW_REGISTRY_URI\"] = plain_uri\n\n    ol_namespace\
+          \ = os.environ.get(\"OPENLINEAGE_NAMESPACE\", \"default\")\n\n    with kfp_lineage(\n\
+          \        \"kfp-model_registration\",\n        inputs=[{\"namespace\": ol_namespace,\
+          \ \"name\": \"model.model\"}],\n        outputs=[{\"namespace\": \"mlflow\"\
+          , \"name\": f\"models.{model_name}\"}],\n        url=\"http://marquez\"\
+          ,\n    ):\n        result = json.loads(train_result_json)\n        metrics\
+          \ = json.loads(metrics_json)\n\n        if metrics[\"roc_auc\"] < roc_auc_threshold:\n\
+          \            print(f\"DS: model registration  ROC-AUC {metrics['roc_auc']:.4f}\
+          \ < {roc_auc_threshold} - skipping\")\n            return json.dumps({\"\
+          registered\": False, \"reason\": \"below_threshold\"})\n\n        mlflow.set_tracking_uri(tracking_uri)\n\
+          \        try:\n            mv = mlflow.register_model(model_uri=result[\"\
+          model_uri\"], name=model_name)\n            client = MlflowClient()\n  \
+          \          client.set_registered_model_alias(model_name, \"champion\", str(mv.version))\n\
+          \            print(f\"DS: registered {model_name} v{mv.version} as alias\
+          \ 'champion'\")\n            return json.dumps({\n                \"registered\"\
+          : True,\n                \"model_name\": model_name,\n                \"\
+          version\": int(mv.version),\n                \"alias\": \"champion\",\n\
+          \            })\n        except Exception as e:\n            print(f\"DS:\
+          \ model registration failed (non-fatal): {e}\")\n            return json.dumps({\"\
+          registered\": False, \"reason\": str(e)[:200]})\n\n"
+        env:
+        - name: OPENLINEAGE_PARENT_JOB_NAME
+          value: full-ml-rag-pipeline
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-ds-model-training:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - ds_model_training
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef ds_model_training(\n    dataset: dsl.Input[dsl.Dataset],\n  \
+          \  tracking_uri: str,\n    experiment_name: str,\n    s3_endpoint: str,\n\
+          \    aws_key: str,\n    aws_secret: str,\n) -> str:\n    \"\"\"Train XGBoost,\
+          \ log to MLflow. Returns JSON with run_id, model_uri, metrics.\"\"\"\n \
+          \   import json\n    import os\n\n    import mlflow\n    import mlflow.data\n\
+          \    import mlflow.sklearn\n    import numpy as np\n    import pandas as\
+          \ pd\n    import xgboost as xgb\n    from openlineage_oai.adapters.kfp import\
+          \ kfp_lineage\n    from openlineage_oai.adapters.mlflow.dataset_source import\
+          \ URIDatasetSource\n    from sklearn.metrics import (\n        f1_score,\
+          \ precision_score, recall_score, roc_auc_score,\n    )\n    from sklearn.model_selection\
+          \ import train_test_split\n    from sklearn.preprocessing import LabelEncoder\n\
+          \n    ol_namespace = os.environ.get(\"OPENLINEAGE_NAMESPACE\", \"default\"\
+          )\n\n    os.environ[\"MLFLOW_S3_ENDPOINT_URL\"] = s3_endpoint\n    os.environ[\"\
+          AWS_ACCESS_KEY_ID\"] = aws_key\n    os.environ[\"AWS_SECRET_ACCESS_KEY\"\
+          ] = aws_secret\n    os.environ[\"OPENLINEAGE_URL\"] = \"http://marquez\"\
+          \n\n    with kfp_lineage(\n        \"kfp-model_training\",\n        inputs=[dataset],\n\
+          \        outputs=[{\"namespace\": ol_namespace, \"name\": \"model.model\"\
+          }],\n        url=\"http://marquez\",\n    ):\n        df = pd.read_parquet(dataset.path)\n\
+          \n        cat_cols = [\"contract_type\", \"internet_service\", \"payment_method\"\
+          ]\n        for col in cat_cols:\n            df[col] = LabelEncoder().fit_transform(df[col].astype(str))\n\
+          \n        feature_cols = [\n            \"tenure_months\", \"monthly_charges\"\
+          , \"total_charges\",\n            \"num_support_tickets\", \"contract_type\"\
+          , \"internet_service\",\n            \"payment_method\",\n        ]\n  \
+          \      X = df[feature_cols].values.astype(np.float32)\n        y = df[\"\
+          churn\"].values.astype(np.int32)\n\n        X_train, X_test, y_train, y_test\
+          \ = train_test_split(\n            X, y, test_size=0.2, random_state=42,\
+          \ stratify=y,\n        )\n\n        params = {\n            \"max_depth\"\
+          : 6,\n            \"learning_rate\": 0.1,\n            \"n_estimators\"\
+          : 200,\n            \"objective\": \"binary:logistic\",\n            \"\
+          eval_metric\": \"logloss\",\n            \"seed\": 42,\n        }\n\n  \
+          \      mlflow.set_tracking_uri(tracking_uri)\n        artifact_root = os.getenv(\"\
+          MLFLOW_S3_ARTIFACT_ROOT\", \"s3://mlflow/artifacts\")\n        if mlflow.get_experiment_by_name(experiment_name)\
+          \ is None:\n            mlflow.create_experiment(experiment_name, artifact_location=artifact_root)\n\
+          \        mlflow.set_experiment(experiment_name)\n\n        with mlflow.start_run()\
+          \ as run:\n            train_dataset = mlflow.data.from_pandas(\n      \
+          \          df, source=URIDatasetSource(dataset.uri), name=\"engineered_features\"\
+          ,\n            )\n            mlflow.log_input(train_dataset, context=\"\
+          training\")\n\n            mlflow.log_params(params)\n\n            model\
+          \ = xgb.XGBClassifier(**params)\n            model.fit(X_train, y_train,\
+          \ eval_set=[(X_test, y_test)], verbose=False)\n\n            y_pred = model.predict(X_test)\n\
+          \            y_prob = model.predict_proba(X_test)[:, 1]\n\n            metrics\
+          \ = {\n                \"roc_auc\": float(roc_auc_score(y_test, y_prob)),\n\
+          \                \"f1\": float(f1_score(y_test, y_pred)),\n            \
+          \    \"precision\": float(precision_score(y_test, y_pred)),\n          \
+          \      \"recall\": float(recall_score(y_test, y_pred)),\n            }\n\
+          \            mlflow.log_metrics(metrics)\n\n            info = mlflow.sklearn.log_model(model,\
+          \ artifact_path=\"model\")\n\n            print(f\"DS: model training complete\
+          \ - metrics: {metrics}\")\n            return json.dumps({\n           \
+          \     \"run_id\": run.info.run_id,\n                \"model_uri\": info.model_uri,\n\
+          \                \"metrics\": metrics,\n            })\n\n"
+        env:
+        - name: OPENLINEAGE_PARENT_JOB_NAME
+          value: full-ml-rag-pipeline
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-generate-embeddings:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - generate_embeddings
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef generate_embeddings(\n    input_chunks: dsl.Input[dsl.Dataset],\n\
+          \    model_name: str,\n    minio_endpoint: str,\n    openlineage_url: str,\n\
+          \    output_embeddings: dsl.Output[dsl.Dataset],\n) -> str:\n    \"\"\"\
+          Generate embeddings using sentence-transformers.\"\"\"\n    import json\n\
+          \    import os\n    from datetime import datetime, timezone\n    from uuid\
+          \ import uuid4\n    from sentence_transformers import SentenceTransformer\n\
+          \    from openlineage.client import OpenLineageClient\n    from openlineage.client.run\
+          \ import RunEvent, RunState, Run, Job, Dataset\n    from openlineage.client.facet\
+          \ import SchemaDatasetFacet, SchemaField, OutputStatisticsOutputDatasetFacet\n\
+          \n    with open(input_chunks.path) as f:\n        chunks = json.load(f)\n\
+          \n    print(f\"Loading model: {model_name}\")\n    model = SentenceTransformer(model_name)\n\
+          \n    # Extract texts\n    texts = [chunk[\"text\"] for chunk in chunks]\n\
+          \n    print(f\"Generating embeddings for {len(texts)} chunks...\")\n   \
+          \ embeddings = model.encode(texts, show_progress_bar=True)\n\n    # Add\
+          \ embeddings to chunks\n    for chunk, embedding in zip(chunks, embeddings):\n\
+          \        chunk[\"embedding\"] = embedding.tolist()\n\n    # Save chunks\
+          \ with embeddings\n    with open(output_embeddings.path, 'w') as f:\n  \
+          \      json.dump(chunks, f)\n\n    embedding_dim = embeddings.shape[1]\n\
+          \    print(f\"Generated {len(embeddings)} embeddings of dimension {embedding_dim}\"\
+          )\n\n    # Emit OpenLineage event\n    namespace = os.environ.get(\"OPENLINEAGE_NAMESPACE\"\
+          , \"default\")\n    ol_client = OpenLineageClient(url=openlineage_url)\n\
+          \    run_id = str(uuid4())\n\n    input_dataset = Dataset(\n        namespace=f\"\
+          s3://{minio_endpoint}\",\n        name=\"mlflow.artifacts.rag-ingestion.chunks\"\
+          ,\n        facets={},\n    )\n\n    output_dataset = Dataset(\n        namespace=f\"\
+          s3://{minio_endpoint}\",\n        name=\"mlflow.artifacts.rag-ingestion.embeddings\"\
+          ,\n        facets={\n            \"schema\": SchemaDatasetFacet(\n     \
+          \           fields=[\n                    SchemaField(name=\"chunk_id\"\
+          , type=\"INTEGER\"),\n                    SchemaField(name=\"source\", type=\"\
+          STRING\"),\n                    SchemaField(name=\"filename\", type=\"STRING\"\
+          ),\n                    SchemaField(name=\"text\", type=\"TEXT\"),\n   \
+          \                 SchemaField(name=\"start_char\", type=\"INTEGER\"),\n\
+          \                    SchemaField(name=\"end_char\", type=\"INTEGER\"),\n\
+          \                    SchemaField(name=\"embedding\", type=f\"FLOAT_VECTOR({embedding_dim})\"\
+          ),\n                ]\n            ),\n            \"outputStatistics\"\
+          : OutputStatisticsOutputDatasetFacet(\n                rowCount=len(embeddings),\n\
+          \            ),\n        },\n    )\n\n    event = RunEvent(\n        eventType=RunState.COMPLETE,\n\
+          \        eventTime=datetime.now(timezone.utc).isoformat(),\n        run=Run(runId=run_id,\
+          \ facets={}),\n        job=Job(\n            namespace=namespace,\n    \
+          \        name=\"rag_generate_embeddings\",\n            facets={},\n   \
+          \     ),\n        inputs=[input_dataset],\n        outputs=[output_dataset],\n\
+          \        producer=f\"rag-ingestion-pipeline/embed/{model_name}\",\n    )\n\
+          \    ol_client.emit(event)\n    print(f\"OpenLineage event emitted: {namespace}/rag_generate_embeddings\"\
+          )\n\n    return json.dumps({\n        \"model\": model_name,\n        \"\
+          num_embeddings\": len(embeddings),\n        \"embedding_dim\": int(embedding_dim),\n\
+          \    })\n\n"
+        env:
+        - name: OPENLINEAGE_PARENT_JOB_NAME
+          value: full-ml-rag-pipeline
+        image: image-registry.openshift-image-registry.svc:5000/lineage/rag-app:latest
+    exec-load-documents:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - load_documents
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef load_documents(\n    minio_endpoint: str,\n    bucket_name: str,\n\
+          \    prefix: str,\n    aws_key: str,\n    aws_secret: str,\n    openlineage_url:\
+          \ str,\n    output_docs: dsl.Output[dsl.Dataset],\n) -> int:\n    \"\"\"\
+          Load documents from MinIO and save metadata.\"\"\"\n    import json\n  \
+          \  import os\n    from datetime import datetime, timezone\n    from uuid\
+          \ import uuid4\n    from minio import Minio\n    from openlineage.client\
+          \ import OpenLineageClient\n    from openlineage.client.run import RunEvent,\
+          \ RunState, Run, Job, Dataset\n    from openlineage.client.facet import\
+          \ SchemaDatasetFacet, SchemaField, OutputStatisticsOutputDatasetFacet\n\n\
+          \    os.environ[\"AWS_ACCESS_KEY_ID\"] = aws_key\n    os.environ[\"AWS_SECRET_ACCESS_KEY\"\
+          ] = aws_secret\n\n    client = Minio(\n        minio_endpoint,\n       \
+          \ access_key=aws_key,\n        secret_key=aws_secret,\n        secure=False,\n\
+          \    )\n\n    documents = []\n    source_files = []\n    total_size = 0\n\
+          \    objects = client.list_objects(bucket_name, prefix=prefix, recursive=True)\n\
+          \n    for obj in objects:\n        if obj.object_name.endswith(('.txt',\
+          \ '.md', '.pdf')):\n            # Download document\n            response\
+          \ = client.get_object(bucket_name, obj.object_name)\n            content\
+          \ = response.read().decode('utf-8')\n            response.close()\n    \
+          \        response.release_conn()\n\n            documents.append({\n   \
+          \             \"source\": f\"s3://{bucket_name}/{obj.object_name}\",\n \
+          \               \"content\": content,\n                \"size\": len(content),\n\
+          \                \"filename\": obj.object_name.split('/')[-1],\n       \
+          \     })\n            source_files.append(obj.object_name)\n           \
+          \ total_size += len(content)\n\n    # Save documents as JSON (without indent\
+          \ to save memory)\n    with open(output_docs.path, 'w') as f:\n        json.dump(documents,\
+          \ f)\n\n    print(f\"Loaded {len(documents)} documents from MinIO\")\n\n\
+          \    # Emit OpenLineage event\n    namespace = os.environ.get(\"OPENLINEAGE_NAMESPACE\"\
+          , \"default\")\n    ol_client = OpenLineageClient(url=openlineage_url)\n\
+          \    run_id = str(uuid4())\n\n    # Input: grouped MinIO bucket prefix (all\
+          \ files as single source)\n    input_dataset = Dataset(\n        namespace=f\"\
+          s3://{minio_endpoint}\",\n        name=f\"{bucket_name}.{prefix.rstrip('/')}\"\
+          ,\n        facets={\n            \"schema\": SchemaDatasetFacet(\n     \
+          \           fields=[\n                    SchemaField(name=\"filename\"\
+          , type=\"STRING\"),\n                    SchemaField(name=\"content\", type=\"\
+          TEXT\"),\n                ]\n            ),\n        },\n    )\n\n    #\
+          \ Output: documents JSON dataset (stored as KFP artifact in MinIO)\n   \
+          \ output_dataset = Dataset(\n        namespace=f\"s3://{minio_endpoint}\"\
+          ,\n        name=\"mlflow.artifacts.rag-ingestion.documents\",\n        facets={\n\
+          \            \"schema\": SchemaDatasetFacet(\n                fields=[\n\
+          \                    SchemaField(name=\"source\", type=\"STRING\"),\n  \
+          \                  SchemaField(name=\"content\", type=\"TEXT\"),\n     \
+          \               SchemaField(name=\"size\", type=\"INTEGER\"),\n        \
+          \            SchemaField(name=\"filename\", type=\"STRING\"),\n        \
+          \        ]\n            ),\n            \"outputStatistics\": OutputStatisticsOutputDatasetFacet(\n\
+          \                rowCount=len(documents),\n                size=total_size,\n\
+          \            ),\n        },\n    )\n\n    event = RunEvent(\n        eventType=RunState.COMPLETE,\n\
+          \        eventTime=datetime.now(timezone.utc).isoformat(),\n        run=Run(runId=run_id,\
+          \ facets={}),\n        job=Job(namespace=namespace, name=\"rag_load_documents\"\
+          , facets={}),\n        inputs=[input_dataset],\n        outputs=[output_dataset],\n\
+          \        producer=\"rag-ingestion-pipeline/load\",\n    )\n    ol_client.emit(event)\n\
+          \    print(f\"OpenLineage event emitted: {namespace}/rag_load_documents\"\
+          )\n\n    return len(documents)\n\n"
+        env:
+        - name: OPENLINEAGE_PARENT_JOB_NAME
+          value: full-ml-rag-pipeline
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-platform-feast-apply:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - platform_feast_apply
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef platform_feast_apply(\n    feast_repo_path: str,\n    pg_host:\
+          \ str,\n    redis_host: str,\n) -> str:\n    \"\"\"Run feast apply to register\
+          \ feature definitions. Emits OpenLineage events.\"\"\"\n    import os\n\
+          \    import subprocess\n    from openlineage_oai.adapters.kfp import kfp_lineage\n\
+          \n    ol_namespace = os.environ.get(\"OPENLINEAGE_NAMESPACE\", \"default\"\
+          )\n    feast_project = ol_namespace.replace(\"-\", \"_\")\n    fs_yaml =\
+          \ os.path.join(feast_repo_path, \"feature_store.yaml\")\n    with open(fs_yaml,\
+          \ \"w\") as f:\n        f.write(f\"\"\"\\\nproject: {feast_project}\nprovider:\
+          \ local\nregistry:\n  registry_type: sql\n  path: postgresql://feast:feast@{pg_host}:5432/warehouse\n\
+          \  cache_ttl_seconds: 60\noffline_store:\n  type: postgres\n  host: {pg_host}\n\
+          \  port: 5432\n  database: warehouse\n  db_schema: public\n  user: feast\n\
+          \  password: feast\nonline_store:\n  type: redis\n  connection_string: {redis_host}:6379\n\
+          entity_key_serialization_version: 2\nopenlineage:\n  enabled: true\n  transport_type:\
+          \ http\n  transport_url: http://marquez\n  emit_on_apply: true\n  emit_on_materialize:\
+          \ true\n\"\"\")\n    print(f\"Patched {fs_yaml} -> ol_ns={ol_namespace}\"\
+          )\n\n    pg_ns = f\"postgres://{pg_host}:5432\"\n\n    feast_ns = ol_namespace.replace(\"\
+          -\", \"_\")\n\n    with kfp_lineage(\n        \"kfp-feast_apply\",\n   \
+          \     inputs=[{\"namespace\": pg_ns, \"name\": \"warehouse.customer_features\"\
+          }],\n        outputs=[\n            {\"namespace\": pg_ns, \"name\": \"\
+          warehouse.customer_features_view\"},\n        ],\n        url=\"http://marquez\"\
+          ,\n    ):\n        env = os.environ.copy()\n        env[\"REDIS_PORT\"]\
+          \ = \"6379\"\n        result = subprocess.run(\n            [\"feast\",\
+          \ \"apply\"],\n            cwd=feast_repo_path,\n            capture_output=True,\
+          \ text=True,\n            env=env,\n        )\n        print(result.stdout)\n\
+          \        if result.returncode != 0:\n            print(f\"STDERR: {result.stderr}\"\
+          )\n            raise RuntimeError(f\"feast apply failed: {result.stderr[:500]}\"\
+          )\n        print(\"Platform: feast apply succeeded\")\n    return \"applied\"\
+          \n\n"
+        env:
+        - name: OPENLINEAGE_PARENT_JOB_NAME
+          value: full-ml-rag-pipeline
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-platform-feast-materialize:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - platform_feast_materialize
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef platform_feast_materialize(\n    feast_repo_path: str,\n    pg_host:\
+          \ str,\n    redis_host: str,\n    apply_done: str,\n) -> str:\n    \"\"\"\
+          Materialize features from offline to online store. Emits OpenLineage events.\"\
+          \"\"\n    import os\n    from datetime import datetime, timedelta\n    from\
+          \ feast import FeatureStore\n    from openlineage_oai.adapters.kfp import\
+          \ kfp_lineage\n\n    ol_namespace = os.environ.get(\"OPENLINEAGE_NAMESPACE\"\
+          , \"default\")\n    feast_project = ol_namespace.replace(\"-\", \"_\")\n\
+          \    fs_yaml = os.path.join(feast_repo_path, \"feature_store.yaml\")\n \
+          \   with open(fs_yaml, \"w\") as f:\n        f.write(f\"\"\"\\\nproject:\
+          \ {feast_project}\nprovider: local\nregistry:\n  registry_type: sql\n  path:\
+          \ postgresql://feast:feast@{pg_host}:5432/warehouse\n  cache_ttl_seconds:\
+          \ 60\noffline_store:\n  type: postgres\n  host: {pg_host}\n  port: 5432\n\
+          \  database: warehouse\n  db_schema: public\n  user: feast\n  password:\
+          \ feast\nonline_store:\n  type: redis\n  connection_string: {redis_host}:6379\n\
+          entity_key_serialization_version: 2\nopenlineage:\n  enabled: true\n  transport_type:\
+          \ http\n  transport_url: http://marquez\n  emit_on_apply: true\n  emit_on_materialize:\
+          \ true\n\"\"\")\n\n    pg_ns = f\"postgres://{pg_host}:5432\"\n\n    with\
+          \ kfp_lineage(\n        \"kfp-feast_materialize\",\n        inputs=[{\"\
+          namespace\": pg_ns, \"name\": \"warehouse.customer_features\"}],\n     \
+          \   outputs=[{\"namespace\": feast_project, \"name\": \"online_store_customer_features_view\"\
+          }],\n        url=\"http://marquez\",\n    ):\n        store = FeatureStore(repo_path=feast_repo_path)\n\
+          \        end = datetime.utcnow()\n        start = end - timedelta(days=1000)\n\
+          \        print(f\"Materializing features {start.isoformat()} -> {end.isoformat()}\"\
+          )\n        store.materialize(start_date=start, end_date=end)\n        print(\"\
+          Platform: feast materialize succeeded\")\n    return \"materialized\"\n\n"
+        env:
+        - name: OPENLINEAGE_PARENT_JOB_NAME
+          value: full-ml-rag-pipeline
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-platform-spark-etl:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - platform_spark_etl
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef platform_spark_etl(\n    minio_endpoint: str,\n    pg_host: str,\n\
+          \    pg_user: str,\n    pg_password: str,\n    pg_database: str,\n    warehouse_table:\
+          \ str,\n    openlineage_url: str,\n    aws_access_key: str,\n    aws_secret_key:\
+          \ str,\n) -> str:\n    \"\"\"PySpark ETL that reads CSV from MinIO, transforms,\
+          \ writes to PostgreSQL.\n    The OpenLineage Spark listener emits lineage\
+          \ events automatically.\n    OPENLINEAGE_NAMESPACE is injected by the Argo\
+          \ workflow controller.\"\"\"\n    import os\n    import subprocess\n   \
+          \ from openlineage_oai.adapters.kfp import kfp_lineage\n\n    os.environ[\"\
+          MINIO_ENDPOINT\"] = minio_endpoint\n    os.environ[\"PG_HOST\"] = pg_host\n\
+          \    os.environ[\"PG_USER\"] = pg_user\n    os.environ[\"PG_PASSWORD\"]\
+          \ = pg_password\n    os.environ[\"PG_DATABASE\"] = pg_database\n    os.environ[\"\
+          WAREHOUSE_TABLE\"] = warehouse_table\n    os.environ[\"OPENLINEAGE_URL\"\
+          ] = openlineage_url\n    os.environ[\"AWS_ACCESS_KEY_ID\"] = aws_access_key\n\
+          \    os.environ[\"AWS_SECRET_ACCESS_KEY\"] = aws_secret_key\n\n    with\
+          \ kfp_lineage(\n        \"kfp-spark_etl\",\n        inputs=[{\"namespace\"\
+          : \"s3://raw-data\", \"name\": \"customers.csv\"}],\n        outputs=[{\"\
+          namespace\": f\"postgres://{pg_host}:5432\", \"name\": f\"{pg_database}.{warehouse_table}\"\
+          }],\n        url=openlineage_url,\n    ):\n        result = subprocess.run(\n\
+          \            [\"python3\", \"/opt/spark/spark_etl.py\"],\n            capture_output=True,\
+          \ text=True,\n        )\n        print(result.stdout)\n        if result.returncode\
+          \ != 0:\n            print(f\"STDERR: {result.stderr}\")\n            raise\
+          \ RuntimeError(f\"Spark ETL failed: {result.stderr[:500]}\")\n        print(\"\
+          Platform: spark ETL succeeded\")\n    return \"etl_done\"\n\n"
+        env:
+        - name: OPENLINEAGE_PARENT_JOB_NAME
+          value: full-ml-rag-pipeline
+        image: image-registry.openshift-image-registry.svc:5000/lineage/spark-etl:latest
+    exec-store-in-milvus:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - store_in_milvus
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef store_in_milvus(\n    input_embeddings: dsl.Input[dsl.Dataset],\n\
+          \    milvus_host: str,\n    milvus_port: int,\n    collection_name: str,\n\
+          \    minio_endpoint: str,\n    openlineage_url: str,\n) -> str:\n    \"\"\
+          \"Store embeddings in Milvus vector database and emit OpenLineage event.\"\
+          \"\"\n    import json\n    import os\n    from datetime import datetime,\
+          \ timezone\n    from uuid import uuid4\n    from pymilvus import (\n   \
+          \     connections,\n        Collection,\n        CollectionSchema,\n   \
+          \     FieldSchema,\n        DataType,\n        utility,\n    )\n    from\
+          \ openlineage.client import OpenLineageClient\n    from openlineage.client.run\
+          \ import RunEvent, RunState, Run, Job, Dataset\n    from openlineage.client.facet\
+          \ import (\n        SchemaDatasetFacet,\n        SchemaField,\n        OutputStatisticsOutputDatasetFacet,\n\
+          \    )\n\n    with open(input_embeddings.path) as f:\n        chunks = json.load(f)\n\
+          \n    embedding_dim = len(chunks[0][\"embedding\"])\n\n    # Connect to\
+          \ Milvus\n    print(f\"Connecting to Milvus at {milvus_host}:{milvus_port}\"\
+          )\n    connections.connect(\n        alias=\"default\",\n        host=milvus_host,\n\
+          \        port=milvus_port,\n    )\n\n    # Create collection if it doesn't\
+          \ exist\n    if utility.has_collection(collection_name):\n        print(f\"\
+          Collection '{collection_name}' already exists, dropping it...\")\n     \
+          \   utility.drop_collection(collection_name)\n\n    # Define collection\
+          \ schema\n    fields = [\n        FieldSchema(name=\"id\", dtype=DataType.INT64,\
+          \ is_primary=True, auto_id=True),\n        FieldSchema(name=\"chunk_id\"\
+          , dtype=DataType.INT64),\n        FieldSchema(name=\"source\", dtype=DataType.VARCHAR,\
+          \ max_length=512),\n        FieldSchema(name=\"filename\", dtype=DataType.VARCHAR,\
+          \ max_length=256),\n        FieldSchema(name=\"text\", dtype=DataType.VARCHAR,\
+          \ max_length=65535),\n        FieldSchema(name=\"start_char\", dtype=DataType.INT64),\n\
+          \        FieldSchema(name=\"end_char\", dtype=DataType.INT64),\n       \
+          \ FieldSchema(name=\"embedding\", dtype=DataType.FLOAT_VECTOR, dim=embedding_dim),\n\
+          \    ]\n\n    schema = CollectionSchema(\n        fields=fields,\n     \
+          \   description=f\"RAG document chunks for {collection_name}\",\n    )\n\
+          \n    print(f\"Creating collection '{collection_name}' with {embedding_dim}-dim\
+          \ embeddings...\")\n    collection = Collection(\n        name=collection_name,\n\
+          \        schema=schema,\n    )\n\n    # Prepare data for insertion\n   \
+          \ data = [\n        [chunk[\"chunk_id\"] for chunk in chunks],  # chunk_id\n\
+          \        [chunk[\"source\"] for chunk in chunks],  # source\n        [chunk[\"\
+          filename\"] for chunk in chunks],  # filename\n        [chunk[\"text\"]\
+          \ for chunk in chunks],  # text\n        [chunk[\"start_char\"] for chunk\
+          \ in chunks],  # start_char\n        [chunk[\"end_char\"] for chunk in chunks],\
+          \  # end_char\n        [chunk[\"embedding\"] for chunk in chunks],  # embedding\
+          \ vectors\n    ]\n\n    # Insert data\n    print(f\"Inserting {len(chunks)}\
+          \ chunks into Milvus...\")\n    collection.insert(data)\n\n    # Create\
+          \ index for vector similarity search\n    print(\"Creating IVF_FLAT index\
+          \ for similarity search...\")\n    index_params = {\n        \"metric_type\"\
+          : \"COSINE\",\n        \"index_type\": \"IVF_FLAT\",\n        \"params\"\
+          : {\"nlist\": 128},\n    }\n    collection.create_index(\n        field_name=\"\
+          embedding\",\n        index_params=index_params,\n    )\n\n    # Load collection\
+          \ into memory\n    collection.load()\n\n    # Get collection stats\n   \
+          \ num_entities = collection.num_entities\n    print(f\"Stored {num_entities}\
+          \ chunks in Milvus collection: {collection_name}\")\n\n    # Disconnect\
+          \ from Milvus\n    connections.disconnect(\"default\")\n\n    # Get namespace\
+          \ from environment (injected by Argo workflow controller)\n    namespace\
+          \ = os.environ.get(\"OPENLINEAGE_NAMESPACE\", \"default\")\n\n    # Emit\
+          \ OpenLineage event\n    ol_client = OpenLineageClient(url=openlineage_url)\n\
+          \n    run_id = str(uuid4())\n    now = datetime.now(timezone.utc).isoformat()\n\
+          \n    # Input: embeddings from previous step (stored in MinIO as KFP artifact)\n\
+          \    input_dataset = Dataset(\n        namespace=f\"s3://{minio_endpoint}\"\
+          ,\n        name=\"mlflow.artifacts.rag-ingestion.embeddings\",\n       \
+          \ facets={},\n    )\n\n    # Create schema facet for Milvus collection\n\
+          \    schema_fields = [\n        SchemaField(name=\"id\", type=\"INT64\"\
+          , description=\"Auto-generated primary key\"),\n        SchemaField(name=\"\
+          chunk_id\", type=\"INT64\", description=\"Chunk identifier\"),\n       \
+          \ SchemaField(name=\"source\", type=\"VARCHAR(512)\", description=\"Source\
+          \ document path\"),\n        SchemaField(name=\"filename\", type=\"VARCHAR(256)\"\
+          , description=\"Source filename\"),\n        SchemaField(name=\"text\",\
+          \ type=\"VARCHAR(65535)\", description=\"Chunk text content\"),\n      \
+          \  SchemaField(name=\"start_char\", type=\"INT64\", description=\"Start\
+          \ character position\"),\n        SchemaField(name=\"end_char\", type=\"\
+          INT64\", description=\"End character position\"),\n        SchemaField(name=\"\
+          embedding\", type=f\"FLOAT_VECTOR({embedding_dim})\", description=\"Vector\
+          \ embedding\"),\n    ]\n\n    output_dataset = Dataset(\n        namespace=f\"\
+          milvus://{milvus_host}:{milvus_port}\",\n        name=collection_name,\n\
+          \        facets={\n            \"schema\": SchemaDatasetFacet(fields=schema_fields),\n\
+          \            \"outputStatistics\": OutputStatisticsOutputDatasetFacet(\n\
+          \                rowCount=num_entities,\n                size=sum(len(chunk[\"\
+          text\"]) for chunk in chunks),\n            ),\n        },\n    )\n\n  \
+          \  # Create the job\n    job = Job(\n        namespace=namespace,\n    \
+          \    name=\"rag_store_milvus\",\n        facets={},\n    )\n\n    # Create\
+          \ the run\n    run = Run(runId=run_id, facets={})\n\n    # Emit COMPLETE\
+          \ event\n    event = RunEvent(\n        eventType=RunState.COMPLETE,\n \
+          \       eventTime=now,\n        run=run,\n        job=job,\n        inputs=[input_dataset],\n\
+          \        outputs=[output_dataset],\n        producer=\"rag-ingestion-pipeline/milvus\"\
+          ,\n    )\n\n    ol_client.emit(event)\n    print(f\"OpenLineage event emitted:\
+          \ {namespace}/rag_store_milvus (run: {run_id})\")\n\n    return json.dumps({\n\
+          \        \"collection_name\": collection_name,\n        \"num_chunks\":\
+          \ num_entities,\n        \"embedding_dim\": embedding_dim,\n        \"index_type\"\
+          : \"IVF_FLAT\",\n        \"metric_type\": \"COSINE\",\n        \"openlineage_run_id\"\
+          : run_id,\n    })\n\n"
+        env:
+        - name: OPENLINEAGE_PARENT_JOB_NAME
+          value: full-ml-rag-pipeline
+        image: image-registry.openshift-image-registry.svc:5000/lineage/rag-app:latest
+    exec-test-inference:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - test_inference
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef test_inference(\n    inference_url: str,\n    milvus_host: str,\n\
+          \    milvus_port: int,\n    milvus_collection: str,\n    openlineage_url:\
+          \ str,\n    store_done: str,\n) -> str:\n    \"\"\"Call the RAG inference\
+          \ service and emit OL event linking both pipelines.\"\"\"\n    import json\n\
+          \    import os\n    from datetime import datetime, timezone\n    from uuid\
+          \ import uuid4\n    import requests\n    from openlineage.client import\
+          \ OpenLineageClient\n    from openlineage.client.run import RunEvent, RunState,\
+          \ Run, Job, Dataset\n    from openlineage.client.facet import SchemaDatasetFacet,\
+          \ SchemaField\n\n    namespace = os.environ.get(\"OPENLINEAGE_NAMESPACE\"\
+          , \"default\")\n    feast_project = namespace.replace(\"-\", \"_\")\n\n\
+          \    # Call inference service\n    query = \"What are the best practices\
+          \ for feature engineering in MLOps?\"\n    print(f\"Calling inference service\
+          \ at {inference_url}\")\n    try:\n        resp = requests.post(\n     \
+          \       f\"{inference_url}/query\",\n            json={\"query\": query,\
+          \ \"top_k\": 3},\n            timeout=30,\n        )\n        resp.raise_for_status()\n\
+          \        result = resp.json()\n        print(f\"Inference response: {json.dumps(result,\
+          \ indent=2)[:500]}\")\n    except Exception as e:\n        print(f\"Inference\
+          \ call failed (non-fatal): {e}\")\n        result = {\"error\": str(e),\
+          \ \"query\": query}\n\n    # Emit OpenLineage event showing inference consumes\
+          \ both pipelines' outputs\n    ol_client = OpenLineageClient(url=openlineage_url)\n\
+          \    run_id = str(uuid4())\n\n    milvus_input = Dataset(\n        namespace=f\"\
+          milvus://{milvus_host}:{milvus_port}\",\n        name=milvus_collection,\n\
+          \        facets={},\n    )\n\n    feast_input = Dataset(\n        namespace=feast_project,\n\
+          \        name=\"online_store_customer_features_view\",\n        facets={},\n\
+          \    )\n\n    output_dataset = Dataset(\n        namespace=namespace,\n\
+          \        name=\"rag_inference_result\",\n        facets={\n            \"\
+          schema\": SchemaDatasetFacet(\n                fields=[\n              \
+          \      SchemaField(name=\"query\", type=\"STRING\"),\n                 \
+          \   SchemaField(name=\"response\", type=\"STRING\"),\n                 \
+          \   SchemaField(name=\"sources\", type=\"ARRAY<STRING>\"),\n           \
+          \     ]\n            ),\n        },\n    )\n\n    event = RunEvent(\n  \
+          \      eventType=RunState.COMPLETE,\n        eventTime=datetime.now(timezone.utc).isoformat(),\n\
+          \        run=Run(runId=run_id, facets={}),\n        job=Job(namespace=namespace,\
+          \ name=\"rag_inference\", facets={}),\n        inputs=[milvus_input, feast_input],\n\
+          \        outputs=[output_dataset],\n        producer=\"rag-inference-pipeline/test\"\
+          ,\n    )\n    ol_client.emit(event)\n    print(f\"OpenLineage event emitted:\
+          \ {namespace}/rag_inference\")\n\n    return json.dumps(result)\n\n"
+        env:
+        - name: OPENLINEAGE_PARENT_JOB_NAME
+          value: full-ml-rag-pipeline
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+pipelineInfo:
+  description: 'Combined pipeline: Customer Churn ML (Spark ETL, Feast, XGBoost/MLflow)
+    followed by RAG document ingestion (load, chunk, embed, Milvus). All steps emit
+    OpenLineage events.'
+  name: full-ml-rag-pipeline
+root:
+  dag:
+    tasks:
+      chunk-documents:
+        cachingOptions: {}
+        componentRef:
+          name: comp-chunk-documents
+        dependentTasks:
+        - load-documents
+        inputs:
+          artifacts:
+            input_docs:
+              taskOutputArtifact:
+                outputArtifactKey: output_docs
+                producerTask: load-documents
+          parameters:
+            chunk_overlap:
+              componentInputParameter: rag_chunk_overlap
+            chunk_size:
+              componentInputParameter: rag_chunk_size
+            minio_endpoint:
+              runtimeValue:
+                constant: mlflow-minio:9000
+            openlineage_url:
+              runtimeValue:
+                constant: http://marquez
+        taskInfo:
+          name: chunk-documents
+      ds-data-extraction:
+        cachingOptions: {}
+        componentRef:
+          name: comp-ds-data-extraction
+        dependentTasks:
+        - platform-feast-materialize
+        inputs:
+          parameters:
+            feast_repo_path:
+              componentInputParameter: feast_repo_path
+            materialize_done:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: platform-feast-materialize
+            pg_host:
+              componentInputParameter: pg_host
+            pg_url:
+              componentInputParameter: pg_url
+            redis_host:
+              componentInputParameter: redis_host
+            table_name:
+              componentInputParameter: table_name
+        taskInfo:
+          name: ds-data-extraction
+      ds-evaluation:
+        cachingOptions: {}
+        componentRef:
+          name: comp-ds-evaluation
+        dependentTasks:
+        - ds-model-training
+        inputs:
+          parameters:
+            train_result_json:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: ds-model-training
+        taskInfo:
+          name: ds-evaluation
+      ds-feature-engineering:
+        cachingOptions: {}
+        componentRef:
+          name: comp-ds-feature-engineering
+        dependentTasks:
+        - ds-data-extraction
+        inputs:
+          artifacts:
+            dataset:
+              taskOutputArtifact:
+                outputArtifactKey: output_path
+                producerTask: ds-data-extraction
+        taskInfo:
+          name: ds-feature-engineering
+      ds-model-registration:
+        cachingOptions: {}
+        componentRef:
+          name: comp-ds-model-registration
+        dependentTasks:
+        - ds-evaluation
+        - ds-model-training
+        inputs:
+          parameters:
+            aws_key:
+              componentInputParameter: aws_key
+            aws_secret:
+              componentInputParameter: aws_secret
+            metrics_json:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: ds-evaluation
+            model_name:
+              componentInputParameter: model_name
+            roc_auc_threshold:
+              componentInputParameter: roc_auc_threshold
+            s3_endpoint:
+              componentInputParameter: s3_endpoint
+            tracking_uri:
+              componentInputParameter: tracking_uri
+            train_result_json:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: ds-model-training
+        taskInfo:
+          name: ds-model-registration
+      ds-model-training:
+        cachingOptions: {}
+        componentRef:
+          name: comp-ds-model-training
+        dependentTasks:
+        - ds-feature-engineering
+        inputs:
+          artifacts:
+            dataset:
+              taskOutputArtifact:
+                outputArtifactKey: output_path
+                producerTask: ds-feature-engineering
+          parameters:
+            aws_key:
+              componentInputParameter: aws_key
+            aws_secret:
+              componentInputParameter: aws_secret
+            experiment_name:
+              componentInputParameter: experiment_name
+            s3_endpoint:
+              componentInputParameter: s3_endpoint
+            tracking_uri:
+              componentInputParameter: tracking_uri
+        taskInfo:
+          name: ds-model-training
+      generate-embeddings:
+        cachingOptions: {}
+        componentRef:
+          name: comp-generate-embeddings
+        dependentTasks:
+        - chunk-documents
+        inputs:
+          artifacts:
+            input_chunks:
+              taskOutputArtifact:
+                outputArtifactKey: output_chunks
+                producerTask: chunk-documents
+          parameters:
+            minio_endpoint:
+              runtimeValue:
+                constant: mlflow-minio:9000
+            model_name:
+              componentInputParameter: rag_embedding_model
+            openlineage_url:
+              runtimeValue:
+                constant: http://marquez
+        taskInfo:
+          name: generate-embeddings
+      load-documents:
+        cachingOptions: {}
+        componentRef:
+          name: comp-load-documents
+        dependentTasks:
+        - ds-model-registration
+        inputs:
+          parameters:
+            aws_key:
+              componentInputParameter: aws_key
+            aws_secret:
+              componentInputParameter: aws_secret
+            bucket_name:
+              componentInputParameter: rag_bucket_name
+            minio_endpoint:
+              runtimeValue:
+                constant: mlflow-minio:9000
+            openlineage_url:
+              runtimeValue:
+                constant: http://marquez
+            prefix:
+              componentInputParameter: rag_document_prefix
+        taskInfo:
+          name: load-documents
+      platform-feast-apply:
+        cachingOptions: {}
+        componentRef:
+          name: comp-platform-feast-apply
+        dependentTasks:
+        - platform-spark-etl
+        inputs:
+          parameters:
+            feast_repo_path:
+              componentInputParameter: feast_repo_path
+            pg_host:
+              componentInputParameter: pg_host
+            redis_host:
+              componentInputParameter: redis_host
+        taskInfo:
+          name: platform-feast-apply
+      platform-feast-materialize:
+        cachingOptions: {}
+        componentRef:
+          name: comp-platform-feast-materialize
+        dependentTasks:
+        - platform-feast-apply
+        inputs:
+          parameters:
+            apply_done:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: platform-feast-apply
+            feast_repo_path:
+              componentInputParameter: feast_repo_path
+            pg_host:
+              componentInputParameter: pg_host
+            redis_host:
+              componentInputParameter: redis_host
+        taskInfo:
+          name: platform-feast-materialize
+      platform-spark-etl:
+        cachingOptions: {}
+        componentRef:
+          name: comp-platform-spark-etl
+        inputs:
+          parameters:
+            aws_access_key:
+              componentInputParameter: aws_key
+            aws_secret_key:
+              componentInputParameter: aws_secret
+            minio_endpoint:
+              runtimeValue:
+                constant: mlflow-minio:9000
+            openlineage_url:
+              runtimeValue:
+                constant: http://marquez
+            pg_database:
+              runtimeValue:
+                constant: warehouse
+            pg_host:
+              componentInputParameter: pg_host
+            pg_password:
+              runtimeValue:
+                constant: feast
+            pg_user:
+              runtimeValue:
+                constant: feast
+            warehouse_table:
+              componentInputParameter: table_name
+        taskInfo:
+          name: platform-spark-etl
+      store-in-milvus:
+        cachingOptions: {}
+        componentRef:
+          name: comp-store-in-milvus
+        dependentTasks:
+        - generate-embeddings
+        inputs:
+          artifacts:
+            input_embeddings:
+              taskOutputArtifact:
+                outputArtifactKey: output_embeddings
+                producerTask: generate-embeddings
+          parameters:
+            collection_name:
+              componentInputParameter: milvus_collection
+            milvus_host:
+              componentInputParameter: milvus_host
+            milvus_port:
+              componentInputParameter: milvus_port
+            minio_endpoint:
+              runtimeValue:
+                constant: mlflow-minio:9000
+            openlineage_url:
+              runtimeValue:
+                constant: http://marquez
+        taskInfo:
+          name: store-in-milvus
+      test-inference:
+        cachingOptions: {}
+        componentRef:
+          name: comp-test-inference
+        dependentTasks:
+        - store-in-milvus
+        inputs:
+          parameters:
+            inference_url:
+              runtimeValue:
+                constant: http://rag-inference
+            milvus_collection:
+              componentInputParameter: milvus_collection
+            milvus_host:
+              componentInputParameter: milvus_host
+            milvus_port:
+              componentInputParameter: milvus_port
+            openlineage_url:
+              runtimeValue:
+                constant: http://marquez
+            store_done:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: store-in-milvus
+        taskInfo:
+          name: test-inference
+  inputDefinitions:
+    parameters:
+      aws_key:
+        defaultValue: minioadmin
+        isOptional: true
+        parameterType: STRING
+      aws_secret:
+        defaultValue: minioadmin123
+        isOptional: true
+        parameterType: STRING
+      experiment_name:
+        defaultValue: customer_churn_lineage
+        isOptional: true
+        parameterType: STRING
+      feast_repo_path:
+        defaultValue: /app/src/feature_store
+        isOptional: true
+        parameterType: STRING
+      milvus_collection:
+        defaultValue: ml_docs
+        isOptional: true
+        parameterType: STRING
+      milvus_host:
+        defaultValue: milvus
+        isOptional: true
+        parameterType: STRING
+      milvus_port:
+        defaultValue: 19530.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      model_name:
+        defaultValue: customer_churn_model
+        isOptional: true
+        parameterType: STRING
+      pg_host:
+        defaultValue: postgres
+        isOptional: true
+        parameterType: STRING
+      pg_url:
+        defaultValue: postgresql://feast:feast@postgres:5432/warehouse
+        isOptional: true
+        parameterType: STRING
+      rag_bucket_name:
+        defaultValue: data
+        isOptional: true
+        parameterType: STRING
+      rag_chunk_overlap:
+        defaultValue: 200.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      rag_chunk_size:
+        defaultValue: 1000.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      rag_document_prefix:
+        defaultValue: sample_docs/
+        isOptional: true
+        parameterType: STRING
+      rag_embedding_model:
+        defaultValue: all-MiniLM-L6-v2
+        isOptional: true
+        parameterType: STRING
+      redis_host:
+        defaultValue: redis
+        isOptional: true
+        parameterType: STRING
+      roc_auc_threshold:
+        defaultValue: 0.7
+        isOptional: true
+        parameterType: NUMBER_DOUBLE
+      s3_endpoint:
+        defaultValue: http://mlflow-minio:9000
+        isOptional: true
+        parameterType: STRING
+      table_name:
+        defaultValue: customer_features
+        isOptional: true
+        parameterType: STRING
+      tracking_uri:
+        defaultValue: openlineage+http://mlflow-server:5000
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.16.0
+---
+platforms:
+  kubernetes:
+    deploymentSpec:
+      executors:
+        exec-chunk-documents:
+          fieldPathAsEnv:
+          - fieldPath: metadata.labels['workflows.argoproj.io/workflow']
+            name: OPENLINEAGE_PARENT_RUN_ID
+        exec-ds-data-extraction:
+          fieldPathAsEnv:
+          - fieldPath: metadata.labels['workflows.argoproj.io/workflow']
+            name: OPENLINEAGE_PARENT_RUN_ID
+        exec-ds-evaluation:
+          fieldPathAsEnv:
+          - fieldPath: metadata.labels['workflows.argoproj.io/workflow']
+            name: OPENLINEAGE_PARENT_RUN_ID
+        exec-ds-feature-engineering:
+          fieldPathAsEnv:
+          - fieldPath: metadata.labels['workflows.argoproj.io/workflow']
+            name: OPENLINEAGE_PARENT_RUN_ID
+        exec-ds-model-registration:
+          fieldPathAsEnv:
+          - fieldPath: metadata.labels['workflows.argoproj.io/workflow']
+            name: OPENLINEAGE_PARENT_RUN_ID
+        exec-ds-model-training:
+          fieldPathAsEnv:
+          - fieldPath: metadata.labels['workflows.argoproj.io/workflow']
+            name: OPENLINEAGE_PARENT_RUN_ID
+        exec-generate-embeddings:
+          fieldPathAsEnv:
+          - fieldPath: metadata.labels['workflows.argoproj.io/workflow']
+            name: OPENLINEAGE_PARENT_RUN_ID
+        exec-load-documents:
+          fieldPathAsEnv:
+          - fieldPath: metadata.labels['workflows.argoproj.io/workflow']
+            name: OPENLINEAGE_PARENT_RUN_ID
+        exec-platform-feast-apply:
+          fieldPathAsEnv:
+          - fieldPath: metadata.labels['workflows.argoproj.io/workflow']
+            name: OPENLINEAGE_PARENT_RUN_ID
+        exec-platform-feast-materialize:
+          fieldPathAsEnv:
+          - fieldPath: metadata.labels['workflows.argoproj.io/workflow']
+            name: OPENLINEAGE_PARENT_RUN_ID
+        exec-platform-spark-etl:
+          fieldPathAsEnv:
+          - fieldPath: metadata.labels['workflows.argoproj.io/workflow']
+            name: OPENLINEAGE_PARENT_RUN_ID
+        exec-store-in-milvus:
+          fieldPathAsEnv:
+          - fieldPath: metadata.labels['workflows.argoproj.io/workflow']
+            name: OPENLINEAGE_PARENT_RUN_ID
+        exec-test-inference:
+          fieldPathAsEnv:
+          - fieldPath: metadata.labels['workflows.argoproj.io/workflow']
+            name: OPENLINEAGE_PARENT_RUN_ID

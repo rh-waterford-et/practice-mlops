@@ -1,5 +1,0 @@
-Flask>=2.3.0
-pymilvus>=2.3.0,<3
-feast>=0.32.0
-sentence-transformers>=2.2.0
-PyYAML>=6.0

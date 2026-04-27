@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ml-training-example
+  namespace: lineage
+  annotations:
+    # Enable lineage tracking
+    ai.platform/lineage-enabled: "true"
+
+    # Input datasets (OpenLineage URIs)
+    ai.platform/dataset-0: "redis://redis:6379/customer_churn.customer_features_view"
+    ai.platform/dataset-1: "feast://lineage/online_store_customer_features_view"
+
+    # Output models
+    ai.platform/model-0: "model://lineage/model"
+spec:
+  containers:
+    - name: training
+      image: my-ml-training:latest
+      command: ["python", "train.py"]
+  restartPolicy: Never

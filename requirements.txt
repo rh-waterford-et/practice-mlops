@@ -24,6 +24,7 @@ openlineage-python>=1.0.0
 
 # Kubeflow Pipelines
 kfp>=2.7.0,<3
+kfp-kubernetes>=2.7.0,<3
 
 # Serving
 fastapi>=0.110.0,<1

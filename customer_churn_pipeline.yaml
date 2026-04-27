@@ -1,6 +1,6 @@
 # PIPELINE DEFINITION
 # Name: customer-churn-ml-pipeline
-# Description: End-to-end churn prediction pipeline. PLATFORM steps: Spark ETL, Feast apply & materialize (managed by infra). DS steps: data extraction, feature engineering, XGBoost training, evaluation, MLflow registration (owned by data scientists). OPENLINEAGE_NAMESPACE is injected by the Argo workflow controller.
+# Description: End-to-end churn prediction pipeline. PLATFORM steps: Spark ETL, Feast apply & materialize (managed by infra). DS steps: data extraction, validation, feature engineering, XGBoost training, evaluation, MLflow registration (owned by data scientists). OPENLINEAGE_NAMESPACE is injected by the Argo workflow controller.
 # Inputs:
 #    aws_key: str [Default: 'minioadmin']
 #    aws_secret: str [Default: 'minioadmin123']
@@ -30,6 +30,25 @@ components:
         redis_host:
           parameterType: STRING
         table_name:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        output_path:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-ds-data-validation:
+    executorLabel: exec-ds-data-validation
+    inputDefinitions:
+      artifacts:
+        dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+      parameters:
+        openlineage_namespace:
+          parameterType: STRING
+        openlineage_url:
           parameterType: STRING
     outputDefinitions:
       artifacts:
@@ -237,7 +256,120 @@ deploymentSpec:
         env:
         - name: OPENLINEAGE_PARENT_JOB_NAME
           value: customer-churn-ml-pipeline
-        image: image-registry.openshift-image-registry.svc:5000/lineage-ben/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+    exec-ds-data-validation:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - ds_data_validation
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef ds_data_validation(\n    dataset: dsl.Input[dsl.Dataset],\n \
+          \   openlineage_url: str,\n    openlineage_namespace: str,\n    output_path:\
+          \ dsl.Output[dsl.Dataset],\n) -> None:\n    \"\"\"Validate data quality\
+          \ with Great Expectations, emitting OpenLineage events.\"\"\"\n    import\
+          \ json\n    import os\n    from datetime import datetime, timezone\n   \
+          \ from urllib.request import Request, urlopen\n    from uuid import uuid4\n\
+          \n    import numpy as np\n    import pandas as pd\n    import great_expectations\
+          \ as gx\n\n    ol_ns = openlineage_namespace or os.environ.get(\"OPENLINEAGE_NAMESPACE\"\
+          , \"default\")\n\n    df = pd.read_parquet(dataset.path)\n    print(f\"\
+          Loaded {len(df)} rows for validation\")\n\n    context = gx.get_context()\n\
+          \n    data_source = context.data_sources.add_pandas(name=\"pipeline_data\"\
+          )\n    data_asset = data_source.add_dataframe_asset(name=\"customer_features\"\
+          )\n    batch_def = data_asset.add_batch_definition_whole_dataframe(\n  \
+          \      \"validation_batch\",\n    )\n\n    suite = gx.ExpectationSuite(name=\"\
+          customer_data_quality\")\n\n    critical_cols = [\n        \"entity_id\"\
+          , \"event_timestamp\", \"tenure_months\",\n        \"monthly_charges\",\
+          \ \"total_charges\", \"num_support_tickets\", \"churn\",\n    ]\n    for\
+          \ col in critical_cols:\n        suite.add_expectation(\n            gx.expectations.ExpectColumnToExist(column=col),\n\
+          \        )\n        suite.add_expectation(\n            gx.expectations.ExpectColumnValuesToNotBeNull(\n\
+          \                column=col, mostly=0.95,\n            ),\n        )\n\n\
+          \    numeric_cols = [\n        \"tenure_months\", \"monthly_charges\", \"\
+          total_charges\",\n        \"num_support_tickets\",\n    ]\n    for col in\
+          \ numeric_cols:\n        suite.add_expectation(\n            gx.expectations.ExpectColumnValuesToBeBetween(\n\
+          \                column=col, min_value=0, mostly=0.99,\n            ),\n\
+          \        )\n\n    suite.add_expectation(\n        gx.expectations.ExpectColumnDistinctValuesToBeInSet(\n\
+          \            column=\"churn\", value_set=[0, 1],\n        ),\n    )\n\n\
+          \    suite = context.suites.add(suite)\n\n    val_def = gx.ValidationDefinition(\n\
+          \        data=batch_def,\n        suite=suite,\n        name=\"customer_validation\"\
+          ,\n    )\n    val_def = context.validation_definitions.add(val_def)\n\n\
+          \    checkpoint = gx.Checkpoint(\n        name=\"customer_checkpoint\",\n\
+          \        validation_definitions=[val_def],\n        actions=[],\n      \
+          \  result_format={\"result_format\": \"SUMMARY\"},\n    )\n    context.checkpoints.add(checkpoint)\n\
+          \n    result = checkpoint.run(batch_parameters={\"dataframe\": df})\n\n\
+          \    evaluated = 0\n    successful = 0\n    unsuccessful = 0\n    if result.success:\n\
+          \        print(\"All expectations passed.\")\n    else:\n        print(\"\
+          WARNING: Some expectations failed. Proceeding with remediation.\")\n\n \
+          \   all_vr_results = []\n    for vr_key, vr in result.run_results.items():\n\
+          \        vr_obj = vr if hasattr(vr, \"statistics\") else vr.get(\"validation_result\"\
+          , vr)\n        stats = vr_obj.statistics\n        evaluated += stats[\"\
+          evaluated_expectations\"]\n        successful += stats[\"successful_expectations\"\
+          ]\n        unsuccessful += stats[\"unsuccessful_expectations\"]\n      \
+          \  print(\n            f\"  Evaluated: {stats['evaluated_expectations']},\
+          \ \"\n            f\"Successful: {stats['successful_expectations']}, \"\n\
+          \            f\"Unsuccessful: {stats['unsuccessful_expectations']}\"\n \
+          \       )\n        all_vr_results.append(vr_obj)\n\n    run_id = str(uuid4())\n\
+          \    now = datetime.now(timezone.utc).isoformat()\n\n    assertions = []\n\
+          \    for vr_obj in all_vr_results:\n        for exp_result in vr_obj.results:\n\
+          \            exp = exp_result.expectation_config\n            assertions.append({\n\
+          \                \"assertion\": exp.type,\n                \"success\":\
+          \ exp_result.success,\n                \"column\": getattr(exp, \"column\"\
+          , \"\") or exp.kwargs.get(\"column\", \"\"),\n            })\n\n    dq_facet\
+          \ = {\n        \"dataQualityAssertions\": {\n            \"_producer\":\
+          \ \"https://greatexpectations.io\",\n            \"_schemaURL\": \"https://openlineage.io/spec/facets/1-0-0/DataQualityAssertionsDatasetFacet.json\"\
+          ,\n            \"assertions\": assertions,\n        }\n    }\n\n    for\
+          \ event_type in (\"START\", \"COMPLETE\"):\n        event = {\n        \
+          \    \"eventType\": event_type,\n            \"eventTime\": now,\n     \
+          \       \"run\": {\"runId\": run_id, \"facets\": {}},\n            \"job\"\
+          : {\n                \"namespace\": ol_ns,\n                \"name\": \"\
+          validate_customer_data\",\n                \"facets\": {},\n           \
+          \ },\n            \"inputs\": [\n                {\n                   \
+          \ \"namespace\": ol_ns,\n                    \"name\": \"customer_features_view\"\
+          ,\n                    \"facets\": dq_facet if event_type == \"COMPLETE\"\
+          \ else {},\n                }\n            ],\n            \"outputs\":\
+          \ [\n                {\n                    \"namespace\": ol_ns,\n    \
+          \                \"name\": \"customer_features_validated\",\n          \
+          \          \"facets\": {},\n                }\n            ],\n        \
+          \    \"producer\": \"https://greatexpectations.io\",\n            \"schemaURL\"\
+          : \"https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent\"\
+          ,\n        }\n        body = json.dumps(event).encode(\"utf-8\")\n     \
+          \   req = Request(\n            f\"{openlineage_url}/api/v1/lineage\",\n\
+          \            data=body,\n            headers={\"Content-Type\": \"application/json\"\
+          },\n            method=\"POST\",\n        )\n        try:\n            with\
+          \ urlopen(req) as resp:\n                print(f\"OL event {event_type}:\
+          \ HTTP {resp.status}\")\n        except Exception as e:\n            print(f\"\
+          OL event {event_type} failed: {e}\")\n\n    for col in critical_cols:\n\
+          \        nulls = df[col].isna().sum()\n        if nulls > 0:\n         \
+          \   print(f\"  Filling {nulls} nulls in {col}\")\n            df[col] =\
+          \ df[col].fillna(0)\n\n    const_cols = df.select_dtypes(include=[np.number]).columns\n\
+          \    for col in const_cols:\n        if df[col].nunique() <= 1:\n      \
+          \      print(f\"  WARNING: {col} is constant\")\n\n    print(f\"DS: validation\
+          \ complete - {len(df)} rows, \"\n          f\"{evaluated} checks ({successful}\
+          \ passed, {unsuccessful} failed)\")\n    df.to_parquet(output_path.path)\n\
+          \n"
+        env:
+        - name: OPENLINEAGE_PARENT_JOB_NAME
+          value: customer-churn-ml-pipeline
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
     exec-ds-evaluation:
       container:
         args:
@@ -269,7 +401,7 @@ deploymentSpec:
           \    from openlineage_oai.adapters.kfp import kfp_lineage\n\n    ol_namespace\
           \ = os.environ.get(\"OPENLINEAGE_NAMESPACE\", \"default\")\n\n    with kfp_lineage(\n\
           \        \"kfp-evaluation\",\n        inputs=[{\"namespace\": ol_namespace,\
-          \ \"name\": \"model/model\"}],\n        outputs=[],\n        url=\"http://marquez\"\
+          \ \"name\": \"model.model\"}],\n        outputs=[],\n        url=\"http://marquez\"\
           ,\n    ):\n        result = json.loads(train_result_json)\n        m = result[\"\
           metrics\"]\n        print(\n            f\"DS: evaluation  ROC-AUC={m['roc_auc']:.4f}\
           \  F1={m['f1']:.4f}  \"\n            f\"Precision={m['precision']:.4f} \
@@ -277,7 +409,7 @@ deploymentSpec:
         env:
         - name: OPENLINEAGE_PARENT_JOB_NAME
           value: customer-churn-ml-pipeline
-        image: image-registry.openshift-image-registry.svc:5000/lineage-ben/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
     exec-ds-feature-engineering:
       container:
         args:
@@ -321,7 +453,7 @@ deploymentSpec:
         env:
         - name: OPENLINEAGE_PARENT_JOB_NAME
           value: customer-churn-ml-pipeline
-        image: image-registry.openshift-image-registry.svc:5000/lineage-ben/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
     exec-ds-model-registration:
       container:
         args:
@@ -360,8 +492,8 @@ deploymentSpec:
           , \"\")\n    os.environ[\"MLFLOW_REGISTRY_URI\"] = plain_uri\n\n    ol_namespace\
           \ = os.environ.get(\"OPENLINEAGE_NAMESPACE\", \"default\")\n\n    with kfp_lineage(\n\
           \        \"kfp-model_registration\",\n        inputs=[{\"namespace\": ol_namespace,\
-          \ \"name\": \"model/model\"}],\n        outputs=[{\"namespace\": \"mlflow\"\
-          , \"name\": f\"models:/{model_name}\"}],\n        url=\"http://marquez\"\
+          \ \"name\": \"model.model\"}],\n        outputs=[{\"namespace\": \"mlflow\"\
+          , \"name\": f\"models.{model_name}\"}],\n        url=\"http://marquez\"\
           ,\n    ):\n        result = json.loads(train_result_json)\n        metrics\
           \ = json.loads(metrics_json)\n\n        if metrics[\"roc_auc\"] < roc_auc_threshold:\n\
           \            print(f\"DS: model registration  ROC-AUC {metrics['roc_auc']:.4f}\
@@ -380,7 +512,7 @@ deploymentSpec:
         env:
         - name: OPENLINEAGE_PARENT_JOB_NAME
           value: customer-churn-ml-pipeline
-        image: image-registry.openshift-image-registry.svc:5000/lineage-ben/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
     exec-ds-model-training:
       container:
         args:
@@ -423,7 +555,7 @@ deploymentSpec:
           AWS_ACCESS_KEY_ID\"] = aws_key\n    os.environ[\"AWS_SECRET_ACCESS_KEY\"\
           ] = aws_secret\n    os.environ[\"OPENLINEAGE_URL\"] = \"http://marquez\"\
           \n\n    with kfp_lineage(\n        \"kfp-model_training\",\n        inputs=[dataset],\n\
-          \        outputs=[{\"namespace\": ol_namespace, \"name\": \"model/model\"\
+          \        outputs=[{\"namespace\": ol_namespace, \"name\": \"model.model\"\
           }],\n        url=\"http://marquez\",\n    ):\n        df = pd.read_parquet(dataset.path)\n\
           \n        cat_cols = [\"contract_type\", \"internet_service\", \"payment_method\"\
           ]\n        for col in cat_cols:\n            df[col] = LabelEncoder().fit_transform(df[col].astype(str))\n\
@@ -460,7 +592,7 @@ deploymentSpec:
         env:
         - name: OPENLINEAGE_PARENT_JOB_NAME
           value: customer-churn-ml-pipeline
-        image: image-registry.openshift-image-registry.svc:5000/lineage-ben/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
     exec-platform-feast-apply:
       container:
         args:
@@ -518,7 +650,7 @@ deploymentSpec:
         env:
         - name: OPENLINEAGE_PARENT_JOB_NAME
           value: customer-churn-ml-pipeline
-        image: image-registry.openshift-image-registry.svc:5000/lineage-ben/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
     exec-platform-feast-materialize:
       container:
         args:
@@ -573,7 +705,7 @@ deploymentSpec:
         env:
         - name: OPENLINEAGE_PARENT_JOB_NAME
           value: customer-churn-ml-pipeline
-        image: image-registry.openshift-image-registry.svc:5000/lineage-ben/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
     exec-platform-spark-etl:
       container:
         args:
@@ -626,12 +758,12 @@ deploymentSpec:
         env:
         - name: OPENLINEAGE_PARENT_JOB_NAME
           value: customer-churn-ml-pipeline
-        image: image-registry.openshift-image-registry.svc:5000/lineage-ben/spark-etl:latest
+        image: image-registry.openshift-image-registry.svc:5000/lineage/spark-etl:latest
 pipelineInfo:
   description: 'End-to-end churn prediction pipeline. PLATFORM steps: Spark ETL, Feast
-    apply & materialize (managed by infra). DS steps: data extraction, feature engineering,
-    XGBoost training, evaluation, MLflow registration (owned by data scientists).
-    OPENLINEAGE_NAMESPACE is injected by the Argo workflow controller.'
+    apply & materialize (managed by infra). DS steps: data extraction, validation,
+    feature engineering, XGBoost training, evaluation, MLflow registration (owned
+    by data scientists). OPENLINEAGE_NAMESPACE is injected by the Argo workflow controller.'
   name: customer-churn-ml-pipeline
 root:
   dag:
@@ -660,6 +792,27 @@ root:
               componentInputParameter: table_name
         taskInfo:
           name: ds-data-extraction
+      ds-data-validation:
+        cachingOptions: {}
+        componentRef:
+          name: comp-ds-data-validation
+        dependentTasks:
+        - ds-data-extraction
+        inputs:
+          artifacts:
+            dataset:
+              taskOutputArtifact:
+                outputArtifactKey: output_path
+                producerTask: ds-data-extraction
+          parameters:
+            openlineage_namespace:
+              runtimeValue:
+                constant: ''
+            openlineage_url:
+              runtimeValue:
+                constant: http://marquez
+        taskInfo:
+          name: ds-data-validation
       ds-evaluation:
         cachingOptions: {}
         componentRef:
@@ -679,13 +832,13 @@ root:
         componentRef:
           name: comp-ds-feature-engineering
         dependentTasks:
-        - ds-data-extraction
+        - ds-data-validation
         inputs:
           artifacts:
             dataset:
               taskOutputArtifact:
                 outputArtifactKey: output_path
-                producerTask: ds-data-extraction
+                producerTask: ds-data-validation
         taskInfo:
           name: ds-feature-engineering
       ds-model-registration:
@@ -869,6 +1022,10 @@ platforms:
     deploymentSpec:
       executors:
         exec-ds-data-extraction:
+          fieldPathAsEnv:
+          - fieldPath: metadata.labels['workflows.argoproj.io/workflow']
+            name: OPENLINEAGE_PARENT_RUN_ID
+        exec-ds-data-validation:
           fieldPathAsEnv:
           - fieldPath: metadata.labels['workflows.argoproj.io/workflow']
             name: OPENLINEAGE_PARENT_RUN_ID

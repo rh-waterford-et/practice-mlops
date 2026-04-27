@@ -26,6 +26,9 @@ COPY openlineage-oai/ /tmp/openlineage-oai/
 RUN pip3 install --no-cache-dir /tmp/openlineage-oai && rm -rf /tmp/openlineage-oai
 
 COPY src/etl/spark_etl.py /opt/spark/spark_etl.py
+COPY src/etl/spark_etl_native_lineage.py /opt/spark/spark_etl_native_lineage.py
+COPY kfp_openlineage_decorator.py /opt/spark/kfp_openlineage_decorator.py
+ENV PYTHONPATH=/opt/spark:$PYTHONPATH
 
 USER 1001
 

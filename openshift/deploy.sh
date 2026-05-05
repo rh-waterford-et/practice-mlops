@@ -1,20 +1,47 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════
-# OpenShift deployment script for the Feast-KFP-MLflow ML system
+# OpenShift deployment — Feast, MLflow, Marquez, MinIO, OpenShift AI DSPA,
+# bootstrap Jobs, inference API (single manifest + helper).
 #
 # Usage:
-#   ./openshift/deploy.sh               # Full deploy (infra + jobs)
-#   ./openshift/deploy.sh infra         # Deploy infrastructure only
-#   ./openshift/deploy.sh build         # Build images only
-#   ./openshift/deploy.sh jobs          # Run pipeline jobs only
-#   ./openshift/deploy.sh teardown      # Delete the namespace
+#   ./openshift/deploy.sh                         # Full deploy in OPENSHIFT_APP_NAMESPACE or lineage
+#   OPENSHIFT_APP_NAMESPACE=fkm ./openshift/deploy.sh all
+#   ./openshift/deploy.sh --namespace fkm all     # Same (preferred explicit flag)
+#   ./openshift/deploy.sh infra                   # Infrastructure only (no Jobs)
+#   ./openshift/deploy.sh build
+#   ./openshift/deploy.sh jobs
+#   ./openshift/deploy.sh --namespace fkm teardown
+#
+# Manifest: openshift/lineage-openshift-ai.yaml
+# Splitter: openshift/lineage_manifest.py (infra vs Job documents)
 # ═══════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
-NAMESPACE="lineage"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-STAGE="${1:-all}"
+
+MANIFEST="$SCRIPT_DIR/lineage-openshift-ai.yaml"
+SPLITTER="$SCRIPT_DIR/lineage_manifest.py"
+RENDER_SCRIPT="$SCRIPT_DIR/render_namespace.py"
+
+NAMESPACE="${OPENSHIFT_APP_NAMESPACE:-lineage}"
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -n|--namespace)
+            NAMESPACE="$2"
+            shift 2
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+export OPENSHIFT_APP_NAMESPACE="$NAMESPACE"
+STAGE="${POSITIONAL[0]:-all}"
+
+PYTHON3="${PYTHON3_EXEC:-$(command -v python3.11 2>/dev/null || command -v python3)}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -26,6 +53,11 @@ banner()  { echo -e "\n${CYAN}════════════════�
 info()    { echo -e "${GREEN}[INFO]${NC}  $1"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 err()     { echo -e "${RED}[ERROR]${NC} $1"; }
+
+apply_infra() {
+    info "Applying manifest for namespace $NAMESPACE (rendered from $MANIFEST)"
+    "$PYTHON3" "$RENDER_SCRIPT" "$MANIFEST" "$NAMESPACE" | "$PYTHON3" "$SPLITTER" -f - emit-infra | oc apply -f -
+}
 
 wait_for_pod() {
     local label=$1 timeout=${2:-120}
@@ -80,25 +112,15 @@ if [[ "$STAGE" == "teardown" ]]; then
 fi
 
 # ═══════════════════════════════════════════════════════════════════════
-# 1. CREATE NAMESPACE + BASE RESOURCES
+# 1. INFRASTRUCTURE (namespace … routes, DSPA CR, inference — Jobs skipped)
 # ═══════════════════════════════════════════════════════════════════════
 deploy_infra() {
-    banner "1/6 — Namespace & Config"
+    banner "1/6 — Namespace & stack (from lineage-openshift-ai.yaml)"
 
-    oc apply -f "$SCRIPT_DIR/base/namespace.yaml"
-    oc project "$NAMESPACE"
-
-    # Shared secrets and configmaps
-    oc apply -f "$SCRIPT_DIR/base/secret.yaml"
-    oc apply -f "$SCRIPT_DIR/base/configmap.yaml"
-    oc apply -f "$SCRIPT_DIR/base/feast-config.yaml"
-
-    # Feast postgres PVC
-    oc apply -f "$SCRIPT_DIR/base/pvc.yaml"
+    oc project "$NAMESPACE" 2>/dev/null || true
+    apply_infra
 
     banner "2/6 — Build Images"
-
-    oc apply -f "$SCRIPT_DIR/base/buildconfig.yaml"
 
     info "Building fkm-app image (this may take a few minutes) ..."
     if ! oc start-build fkm-app --from-dir="$PROJECT_ROOT" -n "$NAMESPACE" --follow; then
@@ -110,22 +132,7 @@ deploy_infra() {
         err "spark-etl build FAILED – aborting"; exit 1
     fi
 
-    banner "3/6 — Deploy Databases & Storage"
-
-    # MinIO (shared S3 storage) — includes PVC, Deployment, Service
-    oc apply -f "$SCRIPT_DIR/base/minio.yaml"
-
-    # Feast PostgreSQL (offline store / warehouse)
-    oc apply -f "$SCRIPT_DIR/base/postgres.yaml"
-
-    # Redis (Feast online store)
-    oc apply -f "$SCRIPT_DIR/base/redis.yaml"
-
-    # Marquez DB — includes PVC, Secret, Deployment, Service
-    oc apply -f "$SCRIPT_DIR/base/marquez.yaml"
-
-    # MLflow DB — includes PVC, Secret, Deployment, Service
-    oc apply -f "$SCRIPT_DIR/base/mlflow-db.yaml"
+    banner "3/6 — Wait for storage and database pods"
 
     info "Waiting for storage and database pods ..."
     wait_for_pod "mlflow-minio" 120
@@ -141,15 +148,11 @@ deploy_infra() {
 
     banner "5/6 — Deploy MLflow"
 
-    # MLflow server — includes ConfigMap, Secret, Deployment, Service
-    oc apply -f "$SCRIPT_DIR/base/mlflow.yaml"
     wait_for_pod "mlflow-server" 240
 
-    banner "6/6 — Routes"
+    banner "6/6 — Routes & auxiliary workloads"
 
-    oc apply -f "$SCRIPT_DIR/base/routes.yaml"
-
-    info "Infrastructure deployed"
+    info "Infrastructure applied (includes Routes, DSPA, inference Deployment if present)"
 }
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -159,7 +162,7 @@ build_images() {
     banner "Build Images"
     oc project "$NAMESPACE"
 
-    oc apply -f "$SCRIPT_DIR/base/buildconfig.yaml"
+    apply_infra
 
     info "Building fkm-app image ..."
     oc start-build fkm-app --from-dir="$PROJECT_ROOT" -n "$NAMESPACE" --follow
@@ -171,48 +174,37 @@ build_images() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════
-# 3. RUN PIPELINE JOBS (sequential)
+# 3. BOOTSTRAP JOBS (sequential; must run after infra is healthy)
 # ═══════════════════════════════════════════════════════════════════════
 run_jobs() {
     banner "Pipeline Jobs"
     oc project "$NAMESPACE"
 
-    # Job 1: Seed MinIO with sample data + create buckets
-    delete_job_if_exists "minio-seed"
-    oc apply -f "$SCRIPT_DIR/jobs/01-minio-seed.yaml"
-    wait_for_job "minio-seed" 120
+    JOB_ORDER=(minio-seed etl-job feast-apply feast-materialize ml-pipeline promote-model)
+    JOB_TIMEOUTS=(120 180 120 180 900 60)
 
-    # Job 2: ETL – MinIO → PostgreSQL
-    delete_job_if_exists "etl-job"
-    oc apply -f "$SCRIPT_DIR/jobs/02-etl.yaml"
-    wait_for_job "etl-job" 180
+    jdir=$(mktemp -d)
+    trap 'rm -rf "$jdir"' RETURN
+    "$PYTHON3" "$RENDER_SCRIPT" "$MANIFEST" "$NAMESPACE" | "$PYTHON3" "$SPLITTER" -f - materialize-jobs "$jdir"
 
-    # Job 3: Feast apply
-    delete_job_if_exists "feast-apply"
-    oc apply -f "$SCRIPT_DIR/jobs/03-feast-apply.yaml"
-    wait_for_job "feast-apply" 120
+    for i in "${!JOB_ORDER[@]}"; do
+        jn="${JOB_ORDER[$i]}"
+        to="${JOB_TIMEOUTS[$i]}"
+        jf="$jdir/job-${jn}.yaml"
+        if [[ ! -f "$jf" ]]; then
+            err "Missing job file $jf (manifest out of date?)"
+            exit 1
+        fi
+        delete_job_if_exists "$jn"
+        oc apply -f "$jf"
+        wait_for_job "$jn" "$to"
+    done
 
-    # Job 4: Feast materialize (offline → online)
-    delete_job_if_exists "feast-materialize"
-    oc apply -f "$SCRIPT_DIR/jobs/04-feast-materialize.yaml"
-    wait_for_job "feast-materialize" 180
+    banner "Inference API"
 
-    # Job 5: ML pipeline (train + evaluate + register)
-    delete_job_if_exists "ml-pipeline"
-    oc apply -f "$SCRIPT_DIR/jobs/05-ml-pipeline.yaml"
-    wait_for_job "ml-pipeline" 900
-
-    # Job 6: Promote model to Production
-    delete_job_if_exists "promote-model"
-    oc apply -f "$SCRIPT_DIR/jobs/06-promote-model.yaml"
-    wait_for_job "promote-model" 60
-
-    banner "Deploy Inference API"
-
-    oc apply -f "$SCRIPT_DIR/base/inference-api.yaml"
     wait_for_pod "inference-api" 120
 
-    info "Inference API deployed"
+    info "Bootstrap Jobs and inference check complete"
 }
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -228,14 +220,11 @@ case "$STAGE" in
         ;;
     *)
         err "Unknown stage: $STAGE"
-        echo "Usage: $0 {all|infra|build|jobs|teardown}"
+        echo "Usage: $0 [--namespace NS] {all|infra|build|jobs|teardown}"
         exit 1
         ;;
 esac
 
-# ═══════════════════════════════════════════════════════════════════════
-# Print summary
-# ═══════════════════════════════════════════════════════════════════════
 banner "DEPLOYMENT COMPLETE"
 
 echo ""
@@ -244,7 +233,7 @@ oc get pods -n "$NAMESPACE"
 
 echo ""
 info "Routes:"
-oc get routes -n "$NAMESPACE" -o custom-columns='NAME:.metadata.name,HOST:.spec.host'
+oc get routes -n "$NAMESPACE" -o custom-columns='NAME:.metadata.name,HOST:.spec.host' 2>/dev/null || true
 
 echo ""
 INFERENCE_HOST=$(oc get route inference-api -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "<pending>")
@@ -257,6 +246,9 @@ echo "  Inference API  →  https://$INFERENCE_HOST/docs"
 echo "  MLflow UI      →  https://$MLFLOW_HOST"
 echo "  MinIO Console  →  https://$MINIO_HOST  (minioadmin/minioadmin123)"
 echo "  Marquez UI     →  https://$MARQUEZ_HOST"
+echo ""
+echo -e "${GREEN}OpenShift AI pipelines:${NC}"
+echo "  OPENSHIFT_APP_NAMESPACE=$NAMESPACE ./openshift/deploy-dsp.sh all"
 echo ""
 echo -e "${GREEN}Test the API:${NC}"
 echo "  curl -X POST https://$INFERENCE_HOST/predict \\"

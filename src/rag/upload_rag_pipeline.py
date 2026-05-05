@@ -3,53 +3,52 @@ Upload the compiled RAG ingestion pipeline to OpenShift AI (Data Science Pipelin
 
 Usage:
     python -m src.rag.upload_rag_pipeline
+
+With ``oc`` in PATH, uses the same route + token discovery as ``upload_pipeline``.
+Otherwise set ``DSP_ENDPOINT`` (full URL) and optionally ``DSP_TOKEN``.
 """
 import os
+import shutil
 import sys
 from pathlib import Path
 
-import kfp
+import urllib3
 from kfp.client import Client
 
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-def upload_pipeline():
+
+def upload_pipeline() -> None:
     """Upload the RAG pipeline to OpenShift AI."""
-    # Path to compiled pipeline YAML
     pipeline_yaml = Path(__file__).parent.parent.parent / "rag_ingestion_pipeline.yaml"
 
     if not pipeline_yaml.exists():
-        print(f"❌ Pipeline YAML not found: {pipeline_yaml}")
-        print("   Compile it first: python -m src.rag.rag_pipeline")
+        print(f"Pipeline YAML not found: {pipeline_yaml}")
+        print("Compile it first: python -m src.rag.rag_pipeline")
         sys.exit(1)
 
-    # Get DSP endpoint from environment or use default
-    dsp_endpoint = os.getenv(
-        "DSP_ENDPOINT",
-        "https://ds-pipeline-dspa-lineage.apps.your-cluster.com",
-    )
+    if shutil.which("oc"):
+        from src.pipeline.dsp_client import connect_dsp_client
 
-    # Get authentication token (for OpenShift AI)
-    token = os.getenv("DSP_TOKEN")
-    if not token:
-        print("⚠️  No DSP_TOKEN found. Attempting anonymous upload...")
-        print("   Set DSP_TOKEN env var for authenticated access")
+        client = connect_dsp_client()
+        print(f"Connecting via oc to Data Science Pipelines")
+    else:
+        dsp_endpoint = os.getenv(
+            "DSP_ENDPOINT",
+            "https://ds-pipeline-dspa-lineage.apps.your-cluster.com",
+        )
+        token = os.getenv("DSP_TOKEN")
+        print(f"Connecting to Data Science Pipelines at: {dsp_endpoint}")
+        if token:
+            client = Client(host=dsp_endpoint, existing_token=token, ssl_ca_cert=False)
+        else:
+            print("No DSP_TOKEN; anonymous client (may fail on secured clusters)")
+            client = Client(host=dsp_endpoint, ssl_ca_cert=False)
 
-    print(f"📡 Connecting to Data Science Pipelines at: {dsp_endpoint}")
+    pipeline_name = "RAG Document Ingestion"
+    print(f"Uploading pipeline: {pipeline_name}")
 
     try:
-        # Create KFP client
-        if token:
-            client = Client(
-                host=dsp_endpoint,
-                existing_token=token,
-            )
-        else:
-            client = Client(host=dsp_endpoint)
-
-        # Upload pipeline
-        pipeline_name = "RAG Document Ingestion"
-        print(f"📤 Uploading pipeline: {pipeline_name}")
-
         pipeline = client.upload_pipeline(
             pipeline_package_path=str(pipeline_yaml),
             pipeline_name=pipeline_name,
@@ -58,22 +57,9 @@ def upload_pipeline():
                 "Automatic OpenLineage tracking via MLflow and KFP artifacts."
             ),
         )
-
-        print(f"✅ Pipeline uploaded successfully!")
-        print(f"   Pipeline ID: {pipeline.pipeline_id}")
-        print(f"   Pipeline Name: {pipeline.display_name}")
-        print()
-        print(f"🔗 View in UI: {dsp_endpoint}/#/pipelines")
-
+        print(f"Pipeline uploaded. ID: {pipeline.pipeline_id}  Name: {pipeline.display_name}")
     except Exception as e:
-        print(f"❌ Failed to upload pipeline: {e}")
-        print()
-        print("Troubleshooting:")
-        print("  1. Verify DSP_ENDPOINT is correct")
-        print("  2. Check DSP_TOKEN is valid")
-        print("  3. Ensure you have network access to the cluster")
-        print("  4. Verify the Data Science Pipelines application is running:")
-        print("     kubectl get dspa -n lineage")
+        print(f"Failed to upload pipeline: {e}")
         sys.exit(1)
 
 

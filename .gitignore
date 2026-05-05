@@ -9,3 +9,6 @@ build/
 venv/
 data/registry.db
 .ipynb_checkpoints/
+
+# Generated KFP packages (optional combined churn+RAG pipeline)
+full_pipeline.yaml

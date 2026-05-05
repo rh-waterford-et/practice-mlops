@@ -1,32 +1,9 @@
 """
-OpenLineage OAI - Unified OpenLineage client for OpenShift AI.
+OpenLineage helpers used by this repo’s KFP pipeline and MLflow ``openlineage+`` URI.
 
-This package provides automatic OpenLineage emission for ML tools including:
-- MLflow (via tracking store wrapper)
-- Ray (planned)
-- Kubeflow Pipelines (planned)
-- LlamaStack (planned)
-
-Usage:
-    import openlineage_oai
-
-    # Initialize with explicit configuration
-    openlineage_oai.init(
-        url="http://marquez:5000",
-        namespace="ml-platform",
-        tools=["mlflow"],
-    )
-
-    # Or use environment variables:
-    # OPENLINEAGE_URL=http://marquez:5000
-    # OPENLINEAGE_NAMESPACE=ml-platform
-    # MLFLOW_TRACKING_URI=openlineage+postgresql://...
-
-    # Then use tools normally - lineage is automatic!
-    import mlflow
-    with mlflow.start_run():
-        mlflow.log_param("lr", 0.01)
-    # OpenLineage events emitted automatically
+For Kubeflow components, import ``kfp_lineage`` from ``openlineage_oai.adapters.kfp``
+inside the ``@dsl.component`` body. For MLflow, use the tracking-store entry points
+(see ``pyproject.toml``) and optional ``openlineage_oai.init(tools=["mlflow"])``.
 """
 
 import warnings
@@ -43,8 +20,8 @@ _emitter: Optional[OpenLineageEmitter] = None
 _adapters: dict = {}
 _initialized: bool = False
 
-# Available tool adapters
-AVAILABLE_TOOLS = ["mlflow", "kfp"]  # Will expand: "ray", "llamastack"
+# Optional ``openlineage_oai.init(tools=[...])`` adapters (KFP uses ``kfp_lineage`` directly).
+AVAILABLE_TOOLS = ["mlflow"]
 
 
 def init(
@@ -193,10 +170,6 @@ def _load_adapter(tool: str, emitter: OpenLineageEmitter, namespace: str) -> Too
         from openlineage_oai.adapters.mlflow import MLflowAdapter
 
         return MLflowAdapter(emitter, namespace)
-    elif tool == "kfp":
-        from openlineage_oai.adapters.kfp import KFPAdapter
-
-        return KFPAdapter(emitter, namespace)
     # Future adapters:
     # elif tool == "ray":
     #     from openlineage_oai.adapters.ray import RayAdapter

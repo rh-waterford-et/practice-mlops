@@ -60,6 +60,8 @@ components:
     executorLabel: exec-ds-evaluation
     inputDefinitions:
       parameters:
+        tracking_uri:
+          parameterType: STRING
         train_result_json:
           parameterType: STRING
     outputDefinitions:
@@ -215,48 +217,23 @@ deploymentSpec:
           \    table_name: str,\n    pg_host: str,\n    redis_host: str,\n    materialize_done:\
           \ str,\n    output_path: dsl.Output[dsl.Dataset],\n) -> None:\n    \"\"\"\
           Retrieve historical features from Feast and save as parquet.\"\"\"\n   \
-          \ import os\n\n    import pandas as pd\n    from sqlalchemy import create_engine,\
-          \ text\n    from feast import FeatureStore\n    from openlineage_oai.adapters.kfp\
-          \ import kfp_lineage, kfp_output_with_schema\n\n    ol_namespace = os.environ.get(\"\
-          OPENLINEAGE_NAMESPACE\", \"default\")\n    feast_project = ol_namespace.replace(\"\
-          -\", \"_\")\n    fs_yaml = os.path.join(feast_repo_path, \"feature_store.yaml\"\
-          )\n    with open(fs_yaml, \"w\") as f:\n        f.write(f\"\"\"\\\nproject:\
-          \ {feast_project}\nprovider: local\nregistry:\n  registry_type: sql\n  path:\
-          \ postgresql://feast:feast@{pg_host}:5432/warehouse\n  cache_ttl_seconds:\
-          \ 60\noffline_store:\n  type: postgres\n  host: {pg_host}\n  port: 5432\n\
-          \  database: warehouse\n  db_schema: public\n  user: feast\n  password:\
-          \ feast\nonline_store:\n  type: redis\n  connection_string: {redis_host}:6379\n\
-          entity_key_serialization_version: 2\nopenlineage:\n  enabled: true\n  transport_type:\
-          \ http\n  transport_url: http://marquez\n  emit_on_apply: true\n  emit_on_materialize:\
-          \ true\n\"\"\")\n    print(f\"Patched {fs_yaml} -> pg={pg_host}, redis={redis_host},\
-          \ ol_ns={ol_namespace}\")\n\n    with kfp_lineage(\n        \"kfp-data_extraction\"\
-          ,\n        inputs=[{\"namespace\": f\"postgres://{pg_host}:5432\", \"name\"\
-          : \"warehouse.customer_features_view\"}],\n        outputs=[],\n       \
-          \ url=\"http://marquez\",\n    ) as run:\n        engine = create_engine(pg_url)\n\
-          \        with engine.connect() as conn:\n            entity_df = pd.read_sql(\n\
-          \                text(f\"SELECT entity_id, event_timestamp, churn FROM {table_name}\"\
-          ),\n                conn,\n            )\n        engine.dispose()\n   \
-          \     entity_df[\"event_timestamp\"] = pd.to_datetime(\n            entity_df[\"\
-          event_timestamp\"], utc=True,\n        )\n\n        store = FeatureStore(repo_path=feast_repo_path)\n\
-          \        features = [\n            \"customer_features_view:tenure_months\"\
-          ,\n            \"customer_features_view:monthly_charges\",\n           \
-          \ \"customer_features_view:total_charges\",\n            \"customer_features_view:num_support_tickets\"\
-          ,\n            \"customer_features_view:contract_type\",\n            \"\
-          customer_features_view:internet_service\",\n            \"customer_features_view:payment_method\"\
-          ,\n        ]\n        features_df = store.get_historical_features(\n   \
-          \         entity_df=entity_df[[\"entity_id\", \"event_timestamp\"]],\n \
-          \           features=features,\n        ).to_df()\n\n        for df_ in\
-          \ (features_df, entity_df):\n            df_[\"event_timestamp\"] = pd.to_datetime(\n\
-          \                df_[\"event_timestamp\"], utc=True,\n            )\n\n\
-          \        result = features_df.merge(\n            entity_df[[\"entity_id\"\
-          , \"event_timestamp\", \"churn\"]],\n            on=[\"entity_id\", \"event_timestamp\"\
-          ],\n            how=\"left\",\n        )\n        print(f\"DS: data extraction\
-          \ complete - shape {result.shape}\")\n        result.to_parquet(output_path.path)\n\
-          \        run.add_output(kfp_output_with_schema(output_path, result))\n\n"
+          \ import os\n\n    import pandas as pd\n    from openlineage_oai.adapters.kfp\
+          \ import kfp_lineage, kfp_output_with_schema\n\n    from src.pipeline import\
+          \ components\n\n    _ = materialize_done  # KFP dependency edge only\n\n\
+          \    ol_namespace = os.environ.get(\"OPENLINEAGE_NAMESPACE\", \"default\"\
+          )\n    print(f\"DS: data extraction  pg={pg_host} redis={redis_host} ol_ns={ol_namespace}\"\
+          )\n\n    with kfp_lineage(\n        \"kfp-data_extraction\",\n        inputs=[{\"\
+          namespace\": f\"postgres://{pg_host}:5432\", \"name\": \"warehouse.customer_features_view\"\
+          }],\n        outputs=[],\n        url=\"http://marquez\",\n    ) as run:\n\
+          \        result = components.data_extraction_for_kfp(\n            pg_url,\
+          \ feast_repo_path, table_name, pg_host, redis_host,\n        )\n       \
+          \ print(f\"DS: data extraction complete - shape {result.shape}\")\n    \
+          \    result.to_parquet(output_path.path)\n        run.add_output(kfp_output_with_schema(output_path,\
+          \ result))\n\n"
         env:
         - name: OPENLINEAGE_PARENT_JOB_NAME
           value: customer-churn-ml-pipeline
-        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/fkm/fkm-app:latest
     exec-ds-data-validation:
       container:
         args:
@@ -287,89 +264,14 @@ deploymentSpec:
           \   openlineage_url: str,\n    openlineage_namespace: str,\n    output_path:\
           \ dsl.Output[dsl.Dataset],\n) -> None:\n    \"\"\"Validate data quality\
           \ with Great Expectations, emitting OpenLineage events.\"\"\"\n    import\
-          \ json\n    import os\n    from datetime import datetime, timezone\n   \
-          \ from urllib.request import Request, urlopen\n    from uuid import uuid4\n\
-          \n    import numpy as np\n    import pandas as pd\n    import great_expectations\
-          \ as gx\n\n    ol_ns = openlineage_namespace or os.environ.get(\"OPENLINEAGE_NAMESPACE\"\
-          , \"default\")\n\n    df = pd.read_parquet(dataset.path)\n    print(f\"\
-          Loaded {len(df)} rows for validation\")\n\n    context = gx.get_context()\n\
-          \n    data_source = context.data_sources.add_pandas(name=\"pipeline_data\"\
-          )\n    data_asset = data_source.add_dataframe_asset(name=\"customer_features\"\
-          )\n    batch_def = data_asset.add_batch_definition_whole_dataframe(\n  \
-          \      \"validation_batch\",\n    )\n\n    suite = gx.ExpectationSuite(name=\"\
-          customer_data_quality\")\n\n    critical_cols = [\n        \"entity_id\"\
-          , \"event_timestamp\", \"tenure_months\",\n        \"monthly_charges\",\
-          \ \"total_charges\", \"num_support_tickets\", \"churn\",\n    ]\n    for\
-          \ col in critical_cols:\n        suite.add_expectation(\n            gx.expectations.ExpectColumnToExist(column=col),\n\
-          \        )\n        suite.add_expectation(\n            gx.expectations.ExpectColumnValuesToNotBeNull(\n\
-          \                column=col, mostly=0.95,\n            ),\n        )\n\n\
-          \    numeric_cols = [\n        \"tenure_months\", \"monthly_charges\", \"\
-          total_charges\",\n        \"num_support_tickets\",\n    ]\n    for col in\
-          \ numeric_cols:\n        suite.add_expectation(\n            gx.expectations.ExpectColumnValuesToBeBetween(\n\
-          \                column=col, min_value=0, mostly=0.99,\n            ),\n\
-          \        )\n\n    suite.add_expectation(\n        gx.expectations.ExpectColumnDistinctValuesToBeInSet(\n\
-          \            column=\"churn\", value_set=[0, 1],\n        ),\n    )\n\n\
-          \    suite = context.suites.add(suite)\n\n    val_def = gx.ValidationDefinition(\n\
-          \        data=batch_def,\n        suite=suite,\n        name=\"customer_validation\"\
-          ,\n    )\n    val_def = context.validation_definitions.add(val_def)\n\n\
-          \    checkpoint = gx.Checkpoint(\n        name=\"customer_checkpoint\",\n\
-          \        validation_definitions=[val_def],\n        actions=[],\n      \
-          \  result_format={\"result_format\": \"SUMMARY\"},\n    )\n    context.checkpoints.add(checkpoint)\n\
-          \n    result = checkpoint.run(batch_parameters={\"dataframe\": df})\n\n\
-          \    evaluated = 0\n    successful = 0\n    unsuccessful = 0\n    if result.success:\n\
-          \        print(\"All expectations passed.\")\n    else:\n        print(\"\
-          WARNING: Some expectations failed. Proceeding with remediation.\")\n\n \
-          \   all_vr_results = []\n    for vr_key, vr in result.run_results.items():\n\
-          \        vr_obj = vr if hasattr(vr, \"statistics\") else vr.get(\"validation_result\"\
-          , vr)\n        stats = vr_obj.statistics\n        evaluated += stats[\"\
-          evaluated_expectations\"]\n        successful += stats[\"successful_expectations\"\
-          ]\n        unsuccessful += stats[\"unsuccessful_expectations\"]\n      \
-          \  print(\n            f\"  Evaluated: {stats['evaluated_expectations']},\
-          \ \"\n            f\"Successful: {stats['successful_expectations']}, \"\n\
-          \            f\"Unsuccessful: {stats['unsuccessful_expectations']}\"\n \
-          \       )\n        all_vr_results.append(vr_obj)\n\n    run_id = str(uuid4())\n\
-          \    now = datetime.now(timezone.utc).isoformat()\n\n    assertions = []\n\
-          \    for vr_obj in all_vr_results:\n        for exp_result in vr_obj.results:\n\
-          \            exp = exp_result.expectation_config\n            assertions.append({\n\
-          \                \"assertion\": exp.type,\n                \"success\":\
-          \ exp_result.success,\n                \"column\": getattr(exp, \"column\"\
-          , \"\") or exp.kwargs.get(\"column\", \"\"),\n            })\n\n    dq_facet\
-          \ = {\n        \"dataQualityAssertions\": {\n            \"_producer\":\
-          \ \"https://greatexpectations.io\",\n            \"_schemaURL\": \"https://openlineage.io/spec/facets/1-0-0/DataQualityAssertionsDatasetFacet.json\"\
-          ,\n            \"assertions\": assertions,\n        }\n    }\n\n    for\
-          \ event_type in (\"START\", \"COMPLETE\"):\n        event = {\n        \
-          \    \"eventType\": event_type,\n            \"eventTime\": now,\n     \
-          \       \"run\": {\"runId\": run_id, \"facets\": {}},\n            \"job\"\
-          : {\n                \"namespace\": ol_ns,\n                \"name\": \"\
-          validate_customer_data\",\n                \"facets\": {},\n           \
-          \ },\n            \"inputs\": [\n                {\n                   \
-          \ \"namespace\": ol_ns,\n                    \"name\": \"customer_features_view\"\
-          ,\n                    \"facets\": dq_facet if event_type == \"COMPLETE\"\
-          \ else {},\n                }\n            ],\n            \"outputs\":\
-          \ [\n                {\n                    \"namespace\": ol_ns,\n    \
-          \                \"name\": \"customer_features_validated\",\n          \
-          \          \"facets\": {},\n                }\n            ],\n        \
-          \    \"producer\": \"https://greatexpectations.io\",\n            \"schemaURL\"\
-          : \"https://openlineage.io/spec/2-0-2/OpenLineage.json#/$defs/RunEvent\"\
-          ,\n        }\n        body = json.dumps(event).encode(\"utf-8\")\n     \
-          \   req = Request(\n            f\"{openlineage_url}/api/v1/lineage\",\n\
-          \            data=body,\n            headers={\"Content-Type\": \"application/json\"\
-          },\n            method=\"POST\",\n        )\n        try:\n            with\
-          \ urlopen(req) as resp:\n                print(f\"OL event {event_type}:\
-          \ HTTP {resp.status}\")\n        except Exception as e:\n            print(f\"\
-          OL event {event_type} failed: {e}\")\n\n    for col in critical_cols:\n\
-          \        nulls = df[col].isna().sum()\n        if nulls > 0:\n         \
-          \   print(f\"  Filling {nulls} nulls in {col}\")\n            df[col] =\
-          \ df[col].fillna(0)\n\n    const_cols = df.select_dtypes(include=[np.number]).columns\n\
-          \    for col in const_cols:\n        if df[col].nunique() <= 1:\n      \
-          \      print(f\"  WARNING: {col} is constant\")\n\n    print(f\"DS: validation\
-          \ complete - {len(df)} rows, \"\n          f\"{evaluated} checks ({successful}\
-          \ passed, {unsuccessful} failed)\")\n    df.to_parquet(output_path.path)\n\
+          \ pandas as pd\n\n    from src.pipeline.gx_churn_validation import validate_churn_dataset_with_gx\n\
+          \n    df = pd.read_parquet(dataset.path)\n    df = validate_churn_dataset_with_gx(df,\
+          \ openlineage_url, openlineage_namespace)\n    df.to_parquet(output_path.path)\n\
           \n"
         env:
         - name: OPENLINEAGE_PARENT_JOB_NAME
           value: customer-churn-ml-pipeline
-        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/fkm/fkm-app:latest
     exec-ds-evaluation:
       container:
         args:
@@ -396,20 +298,20 @@ deploymentSpec:
 
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef ds_evaluation(train_result_json: str) -> str:\n    \"\"\"Display\
-          \ and return evaluation metrics.\"\"\"\n    import json\n    import os\n\
-          \    from openlineage_oai.adapters.kfp import kfp_lineage\n\n    ol_namespace\
-          \ = os.environ.get(\"OPENLINEAGE_NAMESPACE\", \"default\")\n\n    with kfp_lineage(\n\
-          \        \"kfp-evaluation\",\n        inputs=[{\"namespace\": ol_namespace,\
-          \ \"name\": \"model.model\"}],\n        outputs=[],\n        url=\"http://marquez\"\
-          ,\n    ):\n        result = json.loads(train_result_json)\n        m = result[\"\
-          metrics\"]\n        print(\n            f\"DS: evaluation  ROC-AUC={m['roc_auc']:.4f}\
-          \  F1={m['f1']:.4f}  \"\n            f\"Precision={m['precision']:.4f} \
-          \ Recall={m['recall']:.4f}\"\n        )\n        return json.dumps(m)\n\n"
+          \ *\n\ndef ds_evaluation(train_result_json: str, tracking_uri: str) -> str:\n\
+          \    \"\"\"Display and return evaluation metrics.\"\"\"\n    import json\n\
+          \    import os\n\n    from openlineage_oai.adapters.kfp import kfp_lineage\n\
+          \n    from src.pipeline import components\n\n    ol_namespace = os.environ.get(\"\
+          OPENLINEAGE_NAMESPACE\", \"default\")\n\n    with kfp_lineage(\n       \
+          \ \"kfp-evaluation\",\n        inputs=[{\"namespace\": ol_namespace, \"\
+          name\": \"model.model\"}],\n        outputs=[],\n        url=\"http://marquez\"\
+          ,\n    ):\n        result = json.loads(train_result_json)\n        m = components.evaluation(result,\
+          \ tracking_uri=tracking_uri)\n        return json.dumps({k: float(v) for\
+          \ k, v in m.items()})\n\n"
         env:
         - name: OPENLINEAGE_PARENT_JOB_NAME
           value: customer-churn-ml-pipeline
-        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/fkm/fkm-app:latest
     exec-ds-feature-engineering:
       container:
         args:
@@ -438,22 +340,18 @@ deploymentSpec:
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef ds_feature_engineering(\n    dataset: dsl.Input[dsl.Dataset],\n\
           \    output_path: dsl.Output[dsl.Dataset],\n) -> None:\n    \"\"\"Add derived\
-          \ features.\"\"\"\n    import numpy as np\n    import pandas as pd\n   \
-          \ from openlineage_oai.adapters.kfp import kfp_lineage, kfp_output_with_schema\n\
-          \n    with kfp_lineage(\n        \"kfp-feature_engineering\",\n        inputs=[dataset],\n\
-          \        outputs=[],\n        url=\"http://marquez\",\n    ) as run:\n \
-          \       df = pd.read_parquet(dataset.path)\n        tenure_safe = df[\"\
-          tenure_months\"].replace(0, 1)\n        df[\"charges_per_month\"] = df[\"\
-          total_charges\"] / tenure_safe\n        df[\"ticket_rate\"] = df[\"num_support_tickets\"\
-          ] / tenure_safe\n\n        for col in [\"charges_per_month\", \"ticket_rate\"\
-          ]:\n            df[col] = df[col].replace([np.inf, -np.inf], 0.0)\n\n  \
-          \      print(f\"DS: feature engineering complete - shape {df.shape}\")\n\
-          \        df.to_parquet(output_path.path)\n        run.add_output(kfp_output_with_schema(output_path,\
-          \ df))\n\n"
+          \ features.\"\"\"\n    import pandas as pd\n    from openlineage_oai.adapters.kfp\
+          \ import kfp_lineage, kfp_output_with_schema\n\n    from src.pipeline import\
+          \ components\n\n    with kfp_lineage(\n        \"kfp-feature_engineering\"\
+          ,\n        inputs=[dataset],\n        outputs=[],\n        url=\"http://marquez\"\
+          ,\n    ) as run:\n        df = pd.read_parquet(dataset.path)\n        df\
+          \ = components.feature_engineering(df)\n        print(f\"DS: feature engineering\
+          \ complete - shape {df.shape}\")\n        df.to_parquet(output_path.path)\n\
+          \        run.add_output(kfp_output_with_schema(output_path, df))\n\n"
         env:
         - name: OPENLINEAGE_PARENT_JOB_NAME
           value: customer-churn-ml-pipeline
-        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/fkm/fkm-app:latest
     exec-ds-model-registration:
       container:
         args:
@@ -484,35 +382,24 @@ deploymentSpec:
           \ str,\n    model_name: str,\n    tracking_uri: str,\n    s3_endpoint: str,\n\
           \    aws_key: str,\n    aws_secret: str,\n    roc_auc_threshold: float,\n\
           ) -> str:\n    \"\"\"Register model in MLflow if metrics beat the threshold.\"\
-          \"\"\n    import json\n    import os\n\n    import mlflow\n    from mlflow.tracking\
-          \ import MlflowClient\n    from openlineage_oai.adapters.kfp import kfp_lineage\n\
-          \n    os.environ[\"MLFLOW_S3_ENDPOINT_URL\"] = s3_endpoint\n    os.environ[\"\
-          AWS_ACCESS_KEY_ID\"] = aws_key\n    os.environ[\"AWS_SECRET_ACCESS_KEY\"\
-          ] = aws_secret\n\n    plain_uri = tracking_uri.replace(\"openlineage+\"\
-          , \"\")\n    os.environ[\"MLFLOW_REGISTRY_URI\"] = plain_uri\n\n    ol_namespace\
-          \ = os.environ.get(\"OPENLINEAGE_NAMESPACE\", \"default\")\n\n    with kfp_lineage(\n\
-          \        \"kfp-model_registration\",\n        inputs=[{\"namespace\": ol_namespace,\
+          \"\"\n    import json\n    import os\n\n    from openlineage_oai.adapters.kfp\
+          \ import kfp_lineage\n\n    from src.pipeline import components\n\n    os.environ[\"\
+          MLFLOW_S3_ENDPOINT_URL\"] = s3_endpoint\n    os.environ[\"AWS_ACCESS_KEY_ID\"\
+          ] = aws_key\n    os.environ[\"AWS_SECRET_ACCESS_KEY\"] = aws_secret\n  \
+          \  plain_uri = tracking_uri.replace(\"openlineage+\", \"\")\n    os.environ[\"\
+          MLFLOW_REGISTRY_URI\"] = plain_uri\n\n    ol_namespace = os.environ.get(\"\
+          OPENLINEAGE_NAMESPACE\", \"default\")\n\n    with kfp_lineage(\n       \
+          \ \"kfp-model_registration\",\n        inputs=[{\"namespace\": ol_namespace,\
           \ \"name\": \"model.model\"}],\n        outputs=[{\"namespace\": \"mlflow\"\
           , \"name\": f\"models.{model_name}\"}],\n        url=\"http://marquez\"\
-          ,\n    ):\n        result = json.loads(train_result_json)\n        metrics\
-          \ = json.loads(metrics_json)\n\n        if metrics[\"roc_auc\"] < roc_auc_threshold:\n\
-          \            print(f\"DS: model registration  ROC-AUC {metrics['roc_auc']:.4f}\
-          \ < {roc_auc_threshold} - skipping\")\n            return json.dumps({\"\
-          registered\": False, \"reason\": \"below_threshold\"})\n\n        mlflow.set_tracking_uri(tracking_uri)\n\
-          \        try:\n            mv = mlflow.register_model(model_uri=result[\"\
-          model_uri\"], name=model_name)\n            client = MlflowClient()\n  \
-          \          client.set_registered_model_alias(model_name, \"champion\", str(mv.version))\n\
-          \            print(f\"DS: registered {model_name} v{mv.version} as alias\
-          \ 'champion'\")\n            return json.dumps({\n                \"registered\"\
-          : True,\n                \"model_name\": model_name,\n                \"\
-          version\": int(mv.version),\n                \"alias\": \"champion\",\n\
-          \            })\n        except Exception as e:\n            print(f\"DS:\
-          \ model registration failed (non-fatal): {e}\")\n            return json.dumps({\"\
-          registered\": False, \"reason\": str(e)[:200]})\n\n"
+          ,\n    ):\n        train_result = json.loads(train_result_json)\n      \
+          \  metrics = json.loads(metrics_json)\n        d = components.model_registration(\n\
+          \            train_result, metrics, model_name, tracking_uri, roc_auc_threshold,\n\
+          \        )\n        return json.dumps(d)\n\n"
         env:
         - name: OPENLINEAGE_PARENT_JOB_NAME
           value: customer-churn-ml-pipeline
-        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/fkm/fkm-app:latest
     exec-ds-model-training:
       container:
         args:
@@ -543,56 +430,25 @@ deploymentSpec:
           \  tracking_uri: str,\n    experiment_name: str,\n    s3_endpoint: str,\n\
           \    aws_key: str,\n    aws_secret: str,\n) -> str:\n    \"\"\"Train XGBoost,\
           \ log to MLflow. Returns JSON with run_id, model_uri, metrics.\"\"\"\n \
-          \   import json\n    import os\n\n    import mlflow\n    import mlflow.data\n\
-          \    import mlflow.sklearn\n    import numpy as np\n    import pandas as\
-          \ pd\n    import xgboost as xgb\n    from openlineage_oai.adapters.kfp import\
-          \ kfp_lineage\n    from openlineage_oai.adapters.mlflow.dataset_source import\
-          \ URIDatasetSource\n    from sklearn.metrics import (\n        f1_score,\
-          \ precision_score, recall_score, roc_auc_score,\n    )\n    from sklearn.model_selection\
-          \ import train_test_split\n    from sklearn.preprocessing import LabelEncoder\n\
-          \n    ol_namespace = os.environ.get(\"OPENLINEAGE_NAMESPACE\", \"default\"\
-          )\n\n    os.environ[\"MLFLOW_S3_ENDPOINT_URL\"] = s3_endpoint\n    os.environ[\"\
-          AWS_ACCESS_KEY_ID\"] = aws_key\n    os.environ[\"AWS_SECRET_ACCESS_KEY\"\
-          ] = aws_secret\n    os.environ[\"OPENLINEAGE_URL\"] = \"http://marquez\"\
-          \n\n    with kfp_lineage(\n        \"kfp-model_training\",\n        inputs=[dataset],\n\
-          \        outputs=[{\"namespace\": ol_namespace, \"name\": \"model.model\"\
-          }],\n        url=\"http://marquez\",\n    ):\n        df = pd.read_parquet(dataset.path)\n\
-          \n        cat_cols = [\"contract_type\", \"internet_service\", \"payment_method\"\
-          ]\n        for col in cat_cols:\n            df[col] = LabelEncoder().fit_transform(df[col].astype(str))\n\
-          \n        feature_cols = [\n            \"tenure_months\", \"monthly_charges\"\
-          , \"total_charges\",\n            \"num_support_tickets\", \"contract_type\"\
-          , \"internet_service\",\n            \"payment_method\",\n        ]\n  \
-          \      X = df[feature_cols].values.astype(np.float32)\n        y = df[\"\
-          churn\"].values.astype(np.int32)\n\n        X_train, X_test, y_train, y_test\
-          \ = train_test_split(\n            X, y, test_size=0.2, random_state=42,\
-          \ stratify=y,\n        )\n\n        params = {\n            \"max_depth\"\
-          : 6,\n            \"learning_rate\": 0.1,\n            \"n_estimators\"\
-          : 200,\n            \"objective\": \"binary:logistic\",\n            \"\
-          eval_metric\": \"logloss\",\n            \"seed\": 42,\n        }\n\n  \
-          \      mlflow.set_tracking_uri(tracking_uri)\n        artifact_root = os.getenv(\"\
-          MLFLOW_S3_ARTIFACT_ROOT\", \"s3://mlflow/artifacts\")\n        if mlflow.get_experiment_by_name(experiment_name)\
-          \ is None:\n            mlflow.create_experiment(experiment_name, artifact_location=artifact_root)\n\
-          \        mlflow.set_experiment(experiment_name)\n\n        with mlflow.start_run()\
-          \ as run:\n            train_dataset = mlflow.data.from_pandas(\n      \
-          \          df, source=URIDatasetSource(dataset.uri), name=\"engineered_features\"\
-          ,\n            )\n            mlflow.log_input(train_dataset, context=\"\
-          training\")\n\n            mlflow.log_params(params)\n\n            model\
-          \ = xgb.XGBClassifier(**params)\n            model.fit(X_train, y_train,\
-          \ eval_set=[(X_test, y_test)], verbose=False)\n\n            y_pred = model.predict(X_test)\n\
-          \            y_prob = model.predict_proba(X_test)[:, 1]\n\n            metrics\
-          \ = {\n                \"roc_auc\": float(roc_auc_score(y_test, y_prob)),\n\
-          \                \"f1\": float(f1_score(y_test, y_pred)),\n            \
-          \    \"precision\": float(precision_score(y_test, y_pred)),\n          \
-          \      \"recall\": float(recall_score(y_test, y_pred)),\n            }\n\
-          \            mlflow.log_metrics(metrics)\n\n            info = mlflow.sklearn.log_model(model,\
-          \ artifact_path=\"model\")\n\n            print(f\"DS: model training complete\
-          \ - metrics: {metrics}\")\n            return json.dumps({\n           \
-          \     \"run_id\": run.info.run_id,\n                \"model_uri\": info.model_uri,\n\
-          \                \"metrics\": metrics,\n            })\n\n"
+          \   import json\n    import os\n\n    import pandas as pd\n    from openlineage_oai.adapters.kfp\
+          \ import kfp_lineage\n\n    from src.pipeline import components\n\n    ol_namespace\
+          \ = os.environ.get(\"OPENLINEAGE_NAMESPACE\", \"default\")\n\n    os.environ[\"\
+          MLFLOW_S3_ENDPOINT_URL\"] = s3_endpoint\n    os.environ[\"AWS_ACCESS_KEY_ID\"\
+          ] = aws_key\n    os.environ[\"AWS_SECRET_ACCESS_KEY\"] = aws_secret\n  \
+          \  os.environ[\"OPENLINEAGE_URL\"] = \"http://marquez\"\n    os.environ[\"\
+          DATASET_SOURCE_URI\"] = dataset.uri\n\n    with kfp_lineage(\n        \"\
+          kfp-model_training\",\n        inputs=[dataset],\n        outputs=[{\"namespace\"\
+          : ol_namespace, \"name\": \"model.model\"}],\n        url=\"http://marquez\"\
+          ,\n    ):\n        df = pd.read_parquet(dataset.path)\n        out = components.model_training(df,\
+          \ tracking_uri, experiment_name, params=None)\n        metrics = {k: float(v)\
+          \ for k, v in out[\"metrics\"].items()}\n        print(f\"DS: model training\
+          \ complete - metrics: {metrics}\")\n        return json.dumps({\n      \
+          \      \"run_id\": out[\"run_id\"],\n            \"model_uri\": out[\"model_uri\"\
+          ],\n            \"metrics\": metrics,\n        })\n\n"
         env:
         - name: OPENLINEAGE_PARENT_JOB_NAME
           value: customer-churn-ml-pipeline
-        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/fkm/fkm-app:latest
     exec-platform-feast-apply:
       container:
         args:
@@ -622,35 +478,29 @@ deploymentSpec:
           \ *\n\ndef platform_feast_apply(\n    feast_repo_path: str,\n    pg_host:\
           \ str,\n    redis_host: str,\n) -> str:\n    \"\"\"Run feast apply to register\
           \ feature definitions. Emits OpenLineage events.\"\"\"\n    import os\n\
-          \    import subprocess\n    from openlineage_oai.adapters.kfp import kfp_lineage\n\
+          \    import subprocess\n\n    from openlineage_oai.adapters.kfp import kfp_lineage\n\
+          \    from src.pipeline.feast_runtime_yaml import write_feast_feature_store_yaml\n\
           \n    ol_namespace = os.environ.get(\"OPENLINEAGE_NAMESPACE\", \"default\"\
           )\n    feast_project = ol_namespace.replace(\"-\", \"_\")\n    fs_yaml =\
-          \ os.path.join(feast_repo_path, \"feature_store.yaml\")\n    with open(fs_yaml,\
-          \ \"w\") as f:\n        f.write(f\"\"\"\\\nproject: {feast_project}\nprovider:\
-          \ local\nregistry:\n  registry_type: sql\n  path: postgresql://feast:feast@{pg_host}:5432/warehouse\n\
-          \  cache_ttl_seconds: 60\noffline_store:\n  type: postgres\n  host: {pg_host}\n\
-          \  port: 5432\n  database: warehouse\n  db_schema: public\n  user: feast\n\
-          \  password: feast\nonline_store:\n  type: redis\n  connection_string: {redis_host}:6379\n\
-          entity_key_serialization_version: 2\nopenlineage:\n  enabled: true\n  transport_type:\
-          \ http\n  transport_url: http://marquez\n  emit_on_apply: true\n  emit_on_materialize:\
-          \ true\n\"\"\")\n    print(f\"Patched {fs_yaml} -> ol_ns={ol_namespace}\"\
-          )\n\n    pg_ns = f\"postgres://{pg_host}:5432\"\n\n    feast_ns = ol_namespace.replace(\"\
-          -\", \"_\")\n\n    with kfp_lineage(\n        \"kfp-feast_apply\",\n   \
-          \     inputs=[{\"namespace\": pg_ns, \"name\": \"warehouse.customer_features\"\
-          }],\n        outputs=[\n            {\"namespace\": pg_ns, \"name\": \"\
-          warehouse.customer_features_view\"},\n        ],\n        url=\"http://marquez\"\
-          ,\n    ):\n        env = os.environ.copy()\n        env[\"REDIS_PORT\"]\
-          \ = \"6379\"\n        result = subprocess.run(\n            [\"feast\",\
-          \ \"apply\"],\n            cwd=feast_repo_path,\n            capture_output=True,\
-          \ text=True,\n            env=env,\n        )\n        print(result.stdout)\n\
-          \        if result.returncode != 0:\n            print(f\"STDERR: {result.stderr}\"\
-          )\n            raise RuntimeError(f\"feast apply failed: {result.stderr[:500]}\"\
-          )\n        print(\"Platform: feast apply succeeded\")\n    return \"applied\"\
-          \n\n"
+          \ write_feast_feature_store_yaml(\n        feast_repo_path,\n        feast_project=feast_project,\n\
+          \        pg_host=pg_host,\n        redis_host=redis_host,\n    )\n    print(f\"\
+          Patched {fs_yaml} -> ol_ns={ol_namespace}\")\n\n    pg_ns = f\"postgres://{pg_host}:5432\"\
+          \n\n    feast_ns = ol_namespace.replace(\"-\", \"_\")\n\n    with kfp_lineage(\n\
+          \        \"kfp-feast_apply\",\n        inputs=[{\"namespace\": pg_ns, \"\
+          name\": \"warehouse.customer_features\"}],\n        outputs=[\n        \
+          \    {\"namespace\": pg_ns, \"name\": \"warehouse.customer_features_view\"\
+          },\n        ],\n        url=\"http://marquez\",\n    ):\n        env = os.environ.copy()\n\
+          \        env[\"REDIS_PORT\"] = \"6379\"\n        result = subprocess.run(\n\
+          \            [\"feast\", \"apply\"],\n            cwd=feast_repo_path,\n\
+          \            capture_output=True, text=True,\n            env=env,\n   \
+          \     )\n        print(result.stdout)\n        if result.returncode != 0:\n\
+          \            print(f\"STDERR: {result.stderr}\")\n            raise RuntimeError(f\"\
+          feast apply failed: {result.stderr[:500]}\")\n        print(\"Platform:\
+          \ feast apply succeeded\")\n    return \"applied\"\n\n"
         env:
         - name: OPENLINEAGE_PARENT_JOB_NAME
           value: customer-churn-ml-pipeline
-        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/fkm/fkm-app:latest
     exec-platform-feast-materialize:
       container:
         args:
@@ -680,32 +530,26 @@ deploymentSpec:
           \ *\n\ndef platform_feast_materialize(\n    feast_repo_path: str,\n    pg_host:\
           \ str,\n    redis_host: str,\n    apply_done: str,\n) -> str:\n    \"\"\"\
           Materialize features from offline to online store. Emits OpenLineage events.\"\
-          \"\"\n    import os\n    from datetime import datetime, timedelta\n    from\
-          \ feast import FeatureStore\n    from openlineage_oai.adapters.kfp import\
-          \ kfp_lineage\n\n    ol_namespace = os.environ.get(\"OPENLINEAGE_NAMESPACE\"\
-          , \"default\")\n    feast_project = ol_namespace.replace(\"-\", \"_\")\n\
-          \    fs_yaml = os.path.join(feast_repo_path, \"feature_store.yaml\")\n \
-          \   with open(fs_yaml, \"w\") as f:\n        f.write(f\"\"\"\\\nproject:\
-          \ {feast_project}\nprovider: local\nregistry:\n  registry_type: sql\n  path:\
-          \ postgresql://feast:feast@{pg_host}:5432/warehouse\n  cache_ttl_seconds:\
-          \ 60\noffline_store:\n  type: postgres\n  host: {pg_host}\n  port: 5432\n\
-          \  database: warehouse\n  db_schema: public\n  user: feast\n  password:\
-          \ feast\nonline_store:\n  type: redis\n  connection_string: {redis_host}:6379\n\
-          entity_key_serialization_version: 2\nopenlineage:\n  enabled: true\n  transport_type:\
-          \ http\n  transport_url: http://marquez\n  emit_on_apply: true\n  emit_on_materialize:\
-          \ true\n\"\"\")\n\n    pg_ns = f\"postgres://{pg_host}:5432\"\n\n    with\
-          \ kfp_lineage(\n        \"kfp-feast_materialize\",\n        inputs=[{\"\
-          namespace\": pg_ns, \"name\": \"warehouse.customer_features\"}],\n     \
-          \   outputs=[{\"namespace\": feast_project, \"name\": \"online_store_customer_features_view\"\
-          }],\n        url=\"http://marquez\",\n    ):\n        store = FeatureStore(repo_path=feast_repo_path)\n\
-          \        end = datetime.utcnow()\n        start = end - timedelta(days=1000)\n\
+          \"\"\n    import os\n    from datetime import datetime, timedelta\n\n  \
+          \  from feast import FeatureStore\n    from openlineage_oai.adapters.kfp\
+          \ import kfp_lineage\n    from src.pipeline.feast_runtime_yaml import write_feast_feature_store_yaml\n\
+          \n    ol_namespace = os.environ.get(\"OPENLINEAGE_NAMESPACE\", \"default\"\
+          )\n    feast_project = ol_namespace.replace(\"-\", \"_\")\n    write_feast_feature_store_yaml(\n\
+          \        feast_repo_path,\n        feast_project=feast_project,\n      \
+          \  pg_host=pg_host,\n        redis_host=redis_host,\n    )\n\n    pg_ns\
+          \ = f\"postgres://{pg_host}:5432\"\n\n    with kfp_lineage(\n        \"\
+          kfp-feast_materialize\",\n        inputs=[{\"namespace\": pg_ns, \"name\"\
+          : \"warehouse.customer_features\"}],\n        outputs=[{\"namespace\": feast_project,\
+          \ \"name\": \"online_store_customer_features_view\"}],\n        url=\"http://marquez\"\
+          ,\n    ):\n        store = FeatureStore(repo_path=feast_repo_path)\n   \
+          \     end = datetime.utcnow()\n        start = end - timedelta(days=1000)\n\
           \        print(f\"Materializing features {start.isoformat()} -> {end.isoformat()}\"\
           )\n        store.materialize(start_date=start, end_date=end)\n        print(\"\
           Platform: feast materialize succeeded\")\n    return \"materialized\"\n\n"
         env:
         - name: OPENLINEAGE_PARENT_JOB_NAME
           value: customer-churn-ml-pipeline
-        image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+        image: image-registry.openshift-image-registry.svc:5000/fkm/fkm-app:latest
     exec-platform-spark-etl:
       container:
         args:
@@ -758,7 +602,7 @@ deploymentSpec:
         env:
         - name: OPENLINEAGE_PARENT_JOB_NAME
           value: customer-churn-ml-pipeline
-        image: image-registry.openshift-image-registry.svc:5000/lineage/spark-etl:latest
+        image: image-registry.openshift-image-registry.svc:5000/fkm/spark-etl:latest
 pipelineInfo:
   description: 'End-to-end churn prediction pipeline. PLATFORM steps: Spark ETL, Feast
     apply & materialize (managed by infra). DS steps: data extraction, validation,
@@ -821,6 +665,8 @@ root:
         - ds-model-training
         inputs:
           parameters:
+            tracking_uri:
+              componentInputParameter: tracking_uri
             train_result_json:
               taskOutputParameter:
                 outputParameterKey: Output

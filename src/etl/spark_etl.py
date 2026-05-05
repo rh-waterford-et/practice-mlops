@@ -1,6 +1,8 @@
 """
 Spark ETL  –  MinIO (CSV) -> Transform -> PostgreSQL
 
+Cluster / KFP path (this module). For local pandas ETL see ``src.etl.run_etl``.
+
 Uses PySpark with the OpenLineage Spark listener for automatic lineage.
 The listener reads OPENLINEAGE_URL and OPENLINEAGE_NAMESPACE from the
 environment (injected by the Argo workflow controller on OpenShift).

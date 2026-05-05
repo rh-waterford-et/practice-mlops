@@ -36,7 +36,7 @@ This means every KFP step pod automatically gets `OPENLINEAGE_NAMESPACE` set to 
 
 ### Limitation
 
-The ConfigMap `ds-pipeline-workflow-controller-dspa` is owned by the DSPA operator. If the operator reconciles or the DSPA CR is reapplied, the patch is overwritten. See [namespace-injection.md](../openshift/dsp/namespace-injection.md) for production alternatives (DSPA CR native support, MutatingAdmissionWebhook, GitOps post-patch).
+The ConfigMap `ds-pipeline-workflow-controller-dspa` is owned by the DSPA operator. If the operator reconciles or the DSPA CR is reapplied, the patch is overwritten. See comments in `openshift/deploy-dsp.sh` (workflow-controller `OPENLINEAGE_NAMESPACE` patch) for production alternatives (DSPA CR native support, MutatingAdmissionWebhook, GitOps post-patch).
 
 ### Recommendation to OpenShift AI team
 

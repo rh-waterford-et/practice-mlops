@@ -6,55 +6,28 @@ Usage:
 
 Requires:
     - oc login (already authenticated)
-    - DSPA deployed in lineage namespace
+    - DSPA deployed (set OPENSHIFT_APP_NAMESPACE for non-default project, e.g. fkm)
 """
 
-import subprocess
-import sys
 import time
 
 from kfp import compiler
-from kfp.client import Client
 
-NAMESPACE = "lineage"
-DSPA_NAME = "dspa"
+from src.pipeline.dsp_client import (
+    DEFAULT_NAMESPACE,
+    connect_dsp_client,
+    get_dsp_route_host,
+)
+
 PIPELINE_YAML = "customer_churn_pipeline.yaml"
 PIPELINE_NAME = "customer-churn-ml-pipeline"
-
-
-def get_dsp_route() -> str:
-    """Get the Data Science Pipeline API server route from OpenShift."""
-    result = subprocess.run(
-        [
-            "oc", "get", "route",
-            f"ds-pipeline-{DSPA_NAME}",
-            "-n", NAMESPACE,
-            "-o", "jsonpath={.spec.host}",
-        ],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0 or not result.stdout.strip():
-        print("Could not find DSP route. Trying internal service...")
-        return f"https://ds-pipeline-{DSPA_NAME}.{NAMESPACE}.svc:8888"
-    return f"https://{result.stdout.strip()}"
-
-
-def get_sa_token() -> str:
-    """Get a bearer token for authenticating with the DSP API."""
-    result = subprocess.run(
-        ["oc", "whoami", "-t"],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        print("ERROR: Could not get token. Run 'oc login' first.")
-        sys.exit(1)
-    return result.stdout.strip()
 
 
 def main():
     # 1. Compile the pipeline
     print(f"Compiling pipeline → {PIPELINE_YAML}")
     from src.pipeline.kfp_pipeline import customer_churn_pipeline
+
     compiler.Compiler().compile(
         pipeline_func=customer_churn_pipeline,
         package_path=PIPELINE_YAML,
@@ -62,18 +35,8 @@ def main():
     print("Compilation successful")
 
     # 2. Connect to the DSP API server
-    dsp_url = get_dsp_route()
-    token = get_sa_token()
-    print(f"Connecting to DSP at {dsp_url}")
-
-    client = Client(
-        host=dsp_url,
-        existing_token=token,
-        ssl_ca_cert=False,
-    )
-    # KFP client may need to skip TLS verification for self-signed certs
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    print(f"Connecting to DSP at {get_dsp_route_host(DEFAULT_NAMESPACE)} (namespace={DEFAULT_NAMESPACE})")
+    client = connect_dsp_client(namespace=DEFAULT_NAMESPACE)
 
     # 3. Upload or update the pipeline
     print(f"Uploading pipeline: {PIPELINE_NAME}")
@@ -115,7 +78,7 @@ def main():
         experiment_name="customer_churn_lineage",
     )
     print(f"Run started: {run.run_id}")
-    print(f"\nView in OpenShift AI dashboard → Data Science Pipelines → Runs")
+    print("\nView in OpenShift AI dashboard → Data Science Pipelines → Runs")
 
 
 if __name__ == "__main__":

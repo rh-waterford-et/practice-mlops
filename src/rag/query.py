@@ -1,5 +1,7 @@
 """
-RAG Query Interface - Semantic search over ingested documents.
+RAG query against **pgvector** tables (``rag_<collection>``).
+
+For Milvus-backed collections use ``src.rag.query_milvus`` instead.
 
 Usage:
     python -m src.rag.query "What is MLOps?" --collection ml_docs

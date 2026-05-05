@@ -1,37 +1,60 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════
-# Deploy Data Science Pipelines + upload the ML pipeline to OpenShift AI
+# OpenShift AI — Data Science Pipelines (DSPA) + upload KFP pipeline
 #
 # Prerequisites:
-#   - Infrastructure already deployed (./openshift/deploy.sh)
-#   - ETL, Feast apply, Feast materialize already completed
+#   - ./openshift/deploy.sh infra   (or full stack) so MinIO + namespace exist
 #
 # Usage:
-#   ./openshift/deploy-dsp.sh              # Full: DSPA + compile + upload
-#   ./openshift/deploy-dsp.sh dspa         # Deploy DSPA only
-#   ./openshift/deploy-dsp.sh upload       # Compile + upload only
+#   ./openshift/deploy-dsp.sh                      # DSP in OPENSHIFT_APP_NAMESPACE or lineage
+#   ./openshift/deploy-dsp.sh --namespace fkm all
+#   OPENSHIFT_APP_NAMESPACE=fkm ./openshift/deploy-dsp.sh dspa
+#   ./openshift/deploy-dsp.sh upload               # Compile + upload + start run
 # ═══════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
-NAMESPACE="lineage"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-STAGE="${1:-all}"
+
+MANIFEST="$SCRIPT_DIR/lineage-openshift-ai.yaml"
+SPLITTER="$SCRIPT_DIR/lineage_manifest.py"
+RENDER_SCRIPT="$SCRIPT_DIR/render_namespace.py"
+
+NAMESPACE="${OPENSHIFT_APP_NAMESPACE:-lineage}"
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -n|--namespace)
+            NAMESPACE="$2"
+            shift 2
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+export OPENSHIFT_APP_NAMESPACE="$NAMESPACE"
+STAGE="${POSITIONAL[0]:-all}"
+
+PYTHON3="${PYTHON3_EXEC:-$(command -v python3.11 2>/dev/null || command -v python3)}"
 
 GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 RED='\033[0;31m'
 NC='\033[0m'
 
 banner() { echo -e "\n${CYAN}═══════════════════════════════════════${NC}"; echo -e "${CYAN}  $1${NC}"; echo -e "${CYAN}═══════════════════════════════════════${NC}"; }
 info()   { echo -e "${GREEN}[INFO]${NC}  $1"; }
+warn()   { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 err()    { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # ── Ensure the pipeline-artifacts bucket exists in MinIO ────────────
 create_pipeline_bucket() {
     info "Ensuring 'pipeline-artifacts' bucket exists in MinIO ..."
     oc run minio-bucket-init --rm -i --restart=Never \
-        --image=image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest \
+        --image=image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/fkm-app:latest \
         -n "$NAMESPACE" -- python3 -c "
 from minio import Minio
 client = Minio('mlflow-minio:9000', access_key='minioadmin', secret_key='minioadmin123', secure=False)
@@ -43,7 +66,30 @@ else:
 " 2>&1 || true
 }
 
-# ── Deploy DSPA ─────────────────────────────────────────────────────
+# ── Patch workflow controller: OPENLINEAGE_NAMESPACE from pod namespace ──
+patch_workflow_controller_openlineage() {
+    _dsp_workflow_patch_file=$(mktemp)
+    trap 'rm -f "${_dsp_workflow_patch_file:-}"' RETURN
+    cat >"$_dsp_workflow_patch_file" <<'PATCHYAML'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ds-pipeline-workflow-controller-dspa
+data:
+  mainContainer: |
+    env:
+      - name: OPENLINEAGE_NAMESPACE
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.namespace
+PATCHYAML
+    info "Patching workflow controller ConfigMap (OPENLINEAGE_NAMESPACE) ..."
+    oc patch configmap ds-pipeline-workflow-controller-dspa \
+        -n "$NAMESPACE" --type merge --patch-file "$_dsp_workflow_patch_file" || warn "patch skipped (ConfigMap missing yet?)"
+    oc rollout restart deployment/ds-pipeline-workflow-controller-dspa -n "$NAMESPACE" 2>/dev/null || true
+}
+
+# ── Deploy DSPA (extract from single manifest) ───────────────────────
 deploy_dspa() {
     banner "Deploy Data Science Pipelines"
 
@@ -51,9 +97,8 @@ deploy_dspa() {
 
     create_pipeline_bucket
 
-    info "Applying DSPA secret + CR ..."
-    oc apply -f "$SCRIPT_DIR/dsp/dspa-secret.yaml"
-    oc apply -f "$SCRIPT_DIR/dsp/dspa.yaml"
+    info "Applying DSPA Secret + DataSciencePipelinesApplication (namespace $NAMESPACE) ..."
+    "$PYTHON3" "$RENDER_SCRIPT" "$MANIFEST" "$NAMESPACE" | "$PYTHON3" "$SPLITTER" -f - emit-dspa | oc apply -f -
 
     info "Waiting for DSPA to become ready (this may take 2-3 minutes) ..."
     for i in $(seq 1 60); do
@@ -69,90 +114,21 @@ deploy_dspa() {
         sleep 5
     done
 
+    patch_workflow_controller_openlineage
+
     DSP_ROUTE=$(oc get route "ds-pipeline-dspa" -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "<pending>")
     info "DSP API: https://$DSP_ROUTE"
     info "View pipelines in the OpenShift AI dashboard under Data Science Pipelines"
 }
 
-# ── Compile + Upload pipeline ───────────────────────────────────────
+# ── Compile + upload + run (shared with python -m src.pipeline.upload_pipeline) ──
 upload_pipeline() {
-    banner "Compile & Upload Pipeline"
+    banner "Compile & upload pipeline (Python module)"
 
     cd "$PROJECT_ROOT"
+    "$PYTHON3" -m src.pipeline.upload_pipeline
 
-    info "Compiling pipeline YAML ..."
-    python3 -m src.pipeline.kfp_pipeline
-    info "Compiled → customer_churn_pipeline.yaml"
-
-    DSP_ROUTE=$(oc get route "ds-pipeline-dspa" -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null)
-    TOKEN=$(oc whoami -t)
-
-    if [[ -z "$DSP_ROUTE" ]]; then
-        err "Cannot find DSP route. Is the DSPA deployed?"
-        exit 1
-    fi
-
-    info "Uploading pipeline to https://$DSP_ROUTE ..."
-    python3 -c "
-import urllib3, time
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-from kfp.client import Client
-
-client = Client(
-    host='https://${DSP_ROUTE}',
-    existing_token='${TOKEN}',
-    ssl_ca_cert=False,
-)
-
-pipeline_name = 'customer-churn-ml-pipeline'
-yaml_file = 'customer_churn_pipeline.yaml'
-
-# Upload pipeline definition
-try:
-    p = client.upload_pipeline(
-        pipeline_package_path=yaml_file,
-        pipeline_name=pipeline_name,
-        description='End-to-end: Feast, Validate, Engineer, Train, MLflow',
-    )
-    print(f'Pipeline created: {p.pipeline_id}')
-    pid = p.pipeline_id
-except Exception as e:
-    if 'already exist' in str(e).lower():
-        print('Pipeline exists, uploading new version ...')
-        all_p = client.list_pipelines()
-        pid = None
-        for pp in (all_p.pipelines or []):
-            if pp.display_name == pipeline_name or pp.display_name == 'Customer Churn ML Pipeline':
-                pid = pp.pipeline_id
-                break
-        if pid:
-            v = client.upload_pipeline_version(
-                pipeline_package_path=yaml_file,
-                pipeline_version_name=f'v{int(time.time())}',
-                pipeline_id=pid,
-            )
-            print(f'New version: {v.pipeline_version_id}')
-        else:
-            raise
-    else:
-        raise
-
-# Create a run
-run = client.create_run_from_pipeline_package(
-    pipeline_file=yaml_file,
-    arguments={},
-    run_name=f'churn-run-{int(time.time())}',
-    experiment_name='customer_churn_lineage',
-)
-print(f'Run started: {run.run_id}')
-"
-
-    info "Pipeline uploaded and run started"
-    echo ""
-    echo -e "${GREEN}Open the OpenShift AI dashboard:${NC}"
-    echo "  → Data Science Pipelines → Pipeline definitions"
-    echo "  → Runs tab to see the execution"
+    info "Done. Open OpenShift AI → Data Science Pipelines → Runs"
 }
 
 # ── Main ────────────────────────────────────────────────────────────
@@ -165,7 +141,7 @@ case "$STAGE" in
         ;;
     *)
         err "Unknown stage: $STAGE"
-        echo "Usage: $0 {all|dspa|upload}"
+        echo "Usage: $0 [--namespace NS] {all|dspa|upload}"
         exit 1
         ;;
 esac

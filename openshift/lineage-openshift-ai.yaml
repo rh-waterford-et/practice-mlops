@@ -1,0 +1,1616 @@
+# lineage-openshift-ai.yaml — single manifest for the practice-mlops stack on OpenShift / OpenShift AI.
+#
+# Includes: Namespace, secrets/configmaps, image BuildConfigs, data plane (MinIO, Postgres,
+# Redis, Marquez, MLflow), Routes, DataSciencePipelinesApplication + secret, bootstrap Jobs,
+# and the churn inference Deployment.
+#
+# Apply (after `oc login`):
+#   oc apply -f openshift/lineage-openshift-ai.yaml
+#
+# Image builds (run from repo root; not part of apply):
+#   oc project lineage
+#   oc start-build fkm-app --from-dir=. --follow
+#   oc start-build spark-etl --from-dir=. --follow
+#
+# Bootstrap Jobs + ordering: ./openshift/deploy.sh jobs   (or ./openshift/deploy.sh all)
+# Helper to split this file: python3 openshift/lineage_manifest.py emit-infra | oc apply -f -
+#
+# OpenShift AI: ./openshift/deploy-dsp.sh  (DSPA from this file + workflow-controller OL env patch)
+#
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fkm-credentials
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+type: Opaque
+stringData:
+  # ── MinIO / S3 ──────────────────────────────────────────────────────
+  MINIO_ACCESS_KEY: "minioadmin"
+  MINIO_SECRET_KEY: "minioadmin123"
+  AWS_ACCESS_KEY_ID: "minioadmin"
+  AWS_SECRET_ACCESS_KEY: "minioadmin123"
+  MINIO_ROOT_USER: "minioadmin"
+  MINIO_ROOT_PASSWORD: "minioadmin123"
+  # ── PostgreSQL ──────────────────────────────────────────────────────
+  PG_USER: "feast"
+  PG_PASSWORD: "feast"
+  POSTGRES_USER: "feast"
+  POSTGRES_PASSWORD: "feast"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fkm-config
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+data:
+  # ── MinIO / S3 ──────────────────────────────────────────────────────
+  MINIO_ENDPOINT: "mlflow-minio:9000"
+  MINIO_BUCKET: "raw-data"
+  MINIO_SECURE: "false"
+  MLFLOW_S3_ENDPOINT_URL: "http://mlflow-minio:9000"
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────
+  PG_HOST: "postgres"
+  PG_PORT: "5432"
+  PG_DATABASE: "warehouse"
+  POSTGRES_DB: "warehouse"
+
+  # ── Redis ───────────────────────────────────────────────────────────
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+
+  # ── MLflow ──────────────────────────────────────────────────────────
+  MLFLOW_TRACKING_URI: "openlineage+http://mlflow-server:5000"
+  MLFLOW_REGISTRY_URI: "http://mlflow-server:5000"
+  MLFLOW_EXPERIMENT_NAME: "customer_churn_lineage"
+
+  MLFLOW_ARTIFACT_URI: "s3://mlflow/artifacts"
+
+  # ── OpenLineage ────────────────────────────────────────────────────
+  OPENLINEAGE_URL: "http://marquez"
+  OPENLINEAGE_NAMESPACE: "churn-demo/customer_churn"
+
+  # ── Feast ───────────────────────────────────────────────────────────
+  FEAST_REPO_PATH: "/app/src/feature_store"
+
+  # ── App ─────────────────────────────────────────────────────────────
+  MODEL_NAME: "customer_churn_model"
+  RAW_CSV_OBJECT: "customers.csv"
+  MODEL_ROC_AUC_THRESHOLD: "0.70"
+  WAREHOUSE_TABLE: "customer_features"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: feast-config
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+data:
+  feature_store.yaml: |
+    project: customer_churn
+    provider: local
+    registry:
+      registry_type: sql
+      path: postgresql://feast:feast@postgres:5432/warehouse
+      cache_ttl_seconds: 60
+
+    offline_store:
+      type: postgres
+      host: postgres
+      port: 5432
+      database: warehouse
+      db_schema: public
+      user: feast
+      password: feast
+
+    online_store:
+      type: redis
+      connection_string: redis:6379
+
+    entity_key_serialization_version: 2
+
+    openlineage:
+      enabled: true
+      transport_type: http
+      transport_url: http://marquez
+      namespace: churn-demo
+      emit_on_apply: true
+      emit_on_materialize: true
+---
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    app.kubernetes.io/component: postgres
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+---
+# ImageStream for the unified app image (ETL + Feast + Pipeline + Serving)
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: fkm-app
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+
+---
+# BuildConfig – builds from the repo root using the unified Dockerfile
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: fkm-app
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  source:
+    type: Binary
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+  output:
+    to:
+      kind: ImageStreamTag
+      name: fkm-app:latest
+
+---
+# ImageStream for the Spark ETL image
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: spark-etl
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+
+---
+# BuildConfig – builds from the repo root using Dockerfile.spark
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: spark-etl
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  source:
+    type: Binary
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile.spark
+  output:
+    to:
+      kind: ImageStreamTag
+      name: spark-etl:latest
+  resources:
+    limits:
+      cpu: "2"
+      memory: 4Gi
+---
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlflow-minio-pvc
+  namespace: lineage
+  labels:
+    app: mlflow-minio
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow-minio
+  namespace: lineage
+  labels:
+    app: mlflow-minio
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow-minio
+  template:
+    metadata:
+      labels:
+        app: mlflow-minio
+    spec:
+      containers:
+        - name: minio
+          image: quay.io/minio/minio:latest
+          args: ["server", "/data", "--console-address", ":9001"]
+          ports:
+            - containerPort: 9000
+              name: api
+            - containerPort: 9001
+              name: console
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-minio-secret
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-minio-secret
+                  key: MINIO_ROOT_PASSWORD
+          volumeMounts:
+            - name: minio-data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+      volumes:
+        - name: minio-data
+          persistentVolumeClaim:
+            claimName: mlflow-minio-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-minio
+  namespace: lineage
+  labels:
+    app: mlflow-minio
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  selector:
+    app: mlflow-minio
+  ports:
+    - name: api
+      port: 9000
+      targetPort: 9000
+    - name: console
+      port: 9001
+      targetPort: 9001
+---
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: lineage
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: quay.io/sclorg/postgresql-15-c9s:latest
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRESQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: fkm-credentials
+                  key: PG_USER
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fkm-credentials
+                  key: PG_PASSWORD
+            - name: POSTGRESQL_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: fkm-config
+                  key: PG_DATABASE
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+          readinessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - pg_isready -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - pg_isready -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: lineage
+  labels:
+    app: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: lineage
+  labels:
+    app: redis
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: quay.io/sclorg/redis-7-c9s:latest
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - redis-cli ping | grep -q PONG
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - redis-cli ping | grep -q PONG
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: lineage
+  labels:
+    app: redis
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: marquez-db-pvc
+  namespace: lineage
+  labels:
+    app: marquez-db
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: marquez-db-secret
+  namespace: lineage
+  labels:
+    app: marquez-db
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+type: Opaque
+stringData:
+  POSTGRESQL_USER: "marquez"
+  POSTGRESQL_PASSWORD: "marquez123"
+  POSTGRESQL_DATABASE: "marquez"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: marquez
+  namespace: lineage
+  labels:
+    app.kubernetes.io/component: marquez
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+type: Opaque
+stringData:
+  marquez-db-password: "marquez123"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: marquez-config
+  namespace: lineage
+  labels:
+    app.kubernetes.io/component: marquez
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+data:
+  config.yml: |
+    server:
+      applicationConnectors:
+      - type: http
+        port: ${MARQUEZ_PORT}
+        httpCompliance: RFC7230_LEGACY
+      adminConnectors:
+      - type: http
+        port: ${MARQUEZ_ADMIN_PORT}
+
+    db:
+      driverClass: org.postgresql.Driver
+      url: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      user: ${POSTGRES_USER}
+      password: ${POSTGRES_PASSWORD}
+
+    dbRetention:
+      frequencyMins: 15
+      numberOfRowsPerBatch: 1000
+      retentionDays: 7
+
+    migrateOnStartup: ${MIGRATE_ON_STARTUP}
+
+    logging:
+      level: ${LOG_LEVEL}
+      appenders:
+        - type: console
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marquez-db
+  namespace: lineage
+  labels:
+    app: marquez-db
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: marquez-db
+  template:
+    metadata:
+      labels:
+        app: marquez-db
+    spec:
+      containers:
+        - name: postgresql
+          image: registry.redhat.io/rhel9/postgresql-15:latest
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRESQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: marquez-db-secret
+                  key: POSTGRESQL_USER
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: marquez-db-secret
+                  key: POSTGRESQL_PASSWORD
+            - name: POSTGRESQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: marquez-db-secret
+                  key: POSTGRESQL_DATABASE
+          volumeMounts:
+            - name: db-data
+              mountPath: /var/lib/pgsql/data
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "pg_isready -U marquez -d marquez"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "pg_isready -U marquez -d marquez"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: db-data
+          persistentVolumeClaim:
+            claimName: marquez-db-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marquez-db
+  namespace: lineage
+  labels:
+    app: marquez-db
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  selector:
+    app: marquez-db
+  ports:
+    - port: 5432
+      targetPort: 5432
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marquez
+  namespace: lineage
+  labels:
+    app.kubernetes.io/component: marquez
+    app.kubernetes.io/name: marquez
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: marquez
+      app.kubernetes.io/name: marquez
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: marquez
+        app.kubernetes.io/name: marquez
+    spec:
+      containers:
+        - name: marquez
+          image: docker.io/marquezproject/marquez:0.51.1
+          ports:
+            - containerPort: 5000
+              name: http
+            - containerPort: 5001
+              name: http-admin
+          env:
+            - name: MARQUEZ_PORT
+              value: "5000"
+            - name: MARQUEZ_ADMIN_PORT
+              value: "5001"
+            - name: MARQUEZ_CONFIG
+              value: /usr/src/app/config.yml
+            - name: POSTGRES_HOST
+              value: marquez-db
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: marquez
+            - name: POSTGRES_USER
+              value: marquez
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: marquez
+                  key: marquez-db-password
+            - name: MIGRATE_ON_STARTUP
+              value: "true"
+            - name: LOG_LEVEL
+              value: INFO
+          volumeMounts:
+            - name: marquez-volume
+              mountPath: /usr/src/app/config.yml
+              subPath: config.yml
+          readinessProbe:
+            httpGet:
+              path: /healthcheck
+              port: http-admin
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthcheck
+              port: http-admin
+            periodSeconds: 10
+      volumes:
+        - name: marquez-volume
+          configMap:
+            name: marquez-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marquez
+  namespace: lineage
+  labels:
+    app.kubernetes.io/component: marquez
+    app.kubernetes.io/name: marquez
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  selector:
+    app.kubernetes.io/component: marquez
+    app.kubernetes.io/name: marquez
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marquez-web
+  namespace: lineage
+  labels:
+    app.kubernetes.io/component: web
+    app.kubernetes.io/name: marquez
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: web
+      app.kubernetes.io/name: marquez
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: web
+        app.kubernetes.io/name: marquez
+    spec:
+      containers:
+        - name: marquez-web
+          image: docker.io/marquezproject/marquez-web:0.51.1
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: MARQUEZ_HOST
+              value: marquez
+            - name: MARQUEZ_PORT
+              value: "80"
+            - name: WEB_PORT
+              value: "3000"
+          readinessProbe:
+            httpGet:
+              path: /healthcheck
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthcheck
+              port: http
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marquez-web
+  namespace: lineage
+  labels:
+    app.kubernetes.io/component: web
+    app.kubernetes.io/name: marquez
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  selector:
+    app.kubernetes.io/component: web
+    app.kubernetes.io/name: marquez
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlflow-db-pvc
+  namespace: lineage
+  labels:
+    app: mlflow-db
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mlflow-db-secret
+  namespace: lineage
+  labels:
+    app: mlflow-db
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+type: Opaque
+stringData:
+  POSTGRESQL_USER: "mlflow"
+  POSTGRESQL_PASSWORD: "mlflow123"
+  POSTGRESQL_DATABASE: "mlflow"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow-db
+  namespace: lineage
+  labels:
+    app: mlflow-db
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow-db
+  template:
+    metadata:
+      labels:
+        app: mlflow-db
+    spec:
+      containers:
+        - name: postgresql
+          image: registry.redhat.io/rhel9/postgresql-15:latest
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRESQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-db-secret
+                  key: POSTGRESQL_USER
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-db-secret
+                  key: POSTGRESQL_PASSWORD
+            - name: POSTGRESQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-db-secret
+                  key: POSTGRESQL_DATABASE
+          volumeMounts:
+            - name: db-data
+              mountPath: /var/lib/pgsql/data
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "pg_isready -U mlflow -d mlflow"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "pg_isready -U mlflow -d mlflow"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: db-data
+          persistentVolumeClaim:
+            claimName: mlflow-db-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-db
+  namespace: lineage
+  labels:
+    app: mlflow-db
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  selector:
+    app: mlflow-db
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mlflow-minio-secret
+  namespace: lineage
+  labels:
+    app: mlflow-minio
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+type: Opaque
+stringData:
+  MINIO_ROOT_USER: "minioadmin"
+  MINIO_ROOT_PASSWORD: "minioadmin123"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mlflow-config
+  namespace: lineage
+  labels:
+    app: mlflow-server
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+data:
+  MLFLOW_BACKEND_STORE_URI: "postgresql://mlflow:mlflow123@mlflow-db:5432/mlflow"
+  MLFLOW_ARTIFACTS_DESTINATION: "s3://mlflow/artifacts"
+  MLFLOW_S3_ENDPOINT_URL: "http://mlflow-minio:9000"
+  MLFLOW_S3_IGNORE_TLS: "true"
+  MLFLOW_HOST: "0.0.0.0"
+  MLFLOW_PORT: "5000"
+  # In-cluster KFP pods use Host: mlflow-server:5000; MLflow 3 rejects unknown hosts by default.
+  MLFLOW_SERVER_ALLOWED_HOSTS: "*"
+  AWS_DEFAULT_REGION: "us-east-1"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow-server
+  namespace: lineage
+  labels:
+    app: mlflow-server
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow-server
+  template:
+    metadata:
+      labels:
+        app: mlflow-server
+    spec:
+      containers:
+        - name: mlflow
+          image: ghcr.io/mlflow/mlflow:v3.8.1
+          ports:
+            - containerPort: 5000
+          command:
+            - /bin/bash
+            - -c
+            - |
+              pip install --no-cache-dir --target /tmp/pip psycopg2-binary boto3
+              export PYTHONPATH=/tmp/pip:$PYTHONPATH
+              mlflow server \
+                --backend-store-uri "${MLFLOW_BACKEND_STORE_URI}" \
+                --artifacts-destination "${MLFLOW_ARTIFACTS_DESTINATION}" \
+                --serve-artifacts \
+                --host "${MLFLOW_HOST}" \
+                --port "${MLFLOW_PORT}"
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-minio-secret
+                  key: MINIO_ROOT_USER
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-minio-secret
+                  key: MINIO_ROOT_PASSWORD
+          envFrom:
+            - configMapRef:
+                name: mlflow-config
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 60
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 90
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-server
+  namespace: lineage
+  labels:
+    app: mlflow-server
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  selector:
+    app: mlflow-server
+  ports:
+    - port: 5000
+      targetPort: 5000
+---
+---
+# Expose the FastAPI inference API externally
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: inference-api
+  namespace: lineage
+  labels:
+    app: inference-api
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  to:
+    kind: Service
+    name: inference-api
+  port:
+    targetPort: 8000
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+---
+# Expose the MLflow UI externally
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mlflow-server
+  namespace: lineage
+  labels:
+    app: mlflow-server
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  to:
+    kind: Service
+    name: mlflow-server
+  port:
+    targetPort: 5000
+
+---
+# Expose MinIO console externally
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mlflow-minio-console
+  namespace: lineage
+  labels:
+    app: mlflow-minio
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  to:
+    kind: Service
+    name: mlflow-minio
+  port:
+    targetPort: 9001
+
+---
+# Expose Marquez API externally
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: marquez
+  namespace: lineage
+  labels:
+    app.kubernetes.io/component: marquez
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  to:
+    kind: Service
+    name: marquez
+  port:
+    targetPort: http
+
+---
+# Expose Marquez Web UI externally
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: marquez-web
+  namespace: lineage
+  labels:
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  to:
+    kind: Service
+    name: marquez-web
+  port:
+    targetPort: http
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dashboard-dspa-secret
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: "minioadmin"
+  AWS_SECRET_ACCESS_KEY: "minioadmin123"
+---
+apiVersion: datasciencepipelinesapplications.opendatahub.io/v1
+kind: DataSciencePipelinesApplication
+metadata:
+  name: dspa
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  dspVersion: v2
+
+  apiServer:
+    deploy: true
+    cacheEnabled: true
+    enableOauth: true
+    enableSamplePipeline: false
+    pipelineStore: kubernetes
+    artifactSignedURLExpirySeconds: 60
+
+  database:
+    disableHealthCheck: false
+    mariaDB:
+      deploy: true
+      pipelineDBName: mlpipeline
+      pvcSize: 10Gi
+      username: mlpipeline
+
+  objectStorage:
+    disableHealthCheck: false
+    enableExternalRoute: false
+    externalStorage:
+      basePath: ""
+      bucket: pipeline-artifacts
+      host: mlflow-minio.lineage.svc:9000
+      port: ""
+      region: us-east-1
+      scheme: http
+      s3CredentialsSecret:
+        accessKey: AWS_ACCESS_KEY_ID
+        secretKey: AWS_SECRET_ACCESS_KEY
+        secretName: dashboard-dspa-secret
+
+  persistenceAgent:
+    deploy: true
+    numWorkers: 2
+
+  podToPodTLS: true
+
+  scheduledWorkflow:
+    cronScheduleTimezone: UTC
+    deploy: true
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-seed
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    stage: "01-seed"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        job: minio-seed
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-minio
+          image: registry.access.redhat.com/ubi9:latest
+          command:
+            - bash
+            - -c
+            - |
+              echo "Waiting for mlflow-minio:9000 ..."
+              until bash -c "echo > /dev/tcp/mlflow-minio/9000" 2>/dev/null; do sleep 2; done
+              echo "MinIO is up"
+      containers:
+        - name: seed
+          image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              echo "=== Creating MinIO bucket and uploading seed data ==="
+              python3 -c "
+              from minio import Minio
+
+              client = Minio(
+                  'mlflow-minio:9000',
+                  access_key='minioadmin',
+                  secret_key='minioadmin123',
+                  secure=False,
+              )
+
+              for bucket in ['raw-data', 'mlflow', 'pipeline-artifacts']:
+                  if not client.bucket_exists(bucket):
+                      client.make_bucket(bucket)
+                      print(f'Created bucket: {bucket}')
+                  else:
+                      print(f'Bucket exists: {bucket}')
+
+              client.fput_object('raw-data', 'customers.csv', '/app/data/customers.csv')
+              print('Uploaded customers.csv to raw-data bucket')
+              "
+              echo "=== MinIO seed complete ==="
+          envFrom:
+            - configMapRef:
+                name: fkm-config
+            - secretRef:
+                name: fkm-credentials
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: etl-job
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    stage: "02-etl"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        job: etl
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-postgres
+          image: registry.access.redhat.com/ubi9:latest
+          command:
+            - bash
+            - -c
+            - |
+              echo "Waiting for postgres:5432 ..."
+              until bash -c "echo > /dev/tcp/postgres/5432" 2>/dev/null; do sleep 2; done
+              echo "PostgreSQL is up"
+        - name: wait-for-minio
+          image: registry.access.redhat.com/ubi9:latest
+          command:
+            - bash
+            - -c
+            - |
+              echo "Waiting for mlflow-minio:9000 ..."
+              until bash -c "echo > /dev/tcp/mlflow-minio/9000" 2>/dev/null; do sleep 2; done
+              echo "MinIO is up"
+        - name: wait-for-marquez
+          image: registry.access.redhat.com/ubi9:latest
+          command:
+            - bash
+            - -c
+            - |
+              echo "Waiting for marquez:80 ..."
+              until bash -c "echo > /dev/tcp/marquez/80" 2>/dev/null; do sleep 2; done
+              echo "Marquez is up"
+      containers:
+        - name: spark-etl
+          image: image-registry.openshift-image-registry.svc:5000/lineage/spark-etl:latest
+          envFrom:
+            - configMapRef:
+                name: fkm-config
+            - secretRef:
+                name: fkm-credentials
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: feast-apply
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    stage: "03-feast-apply"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        job: feast-apply
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-postgres
+          image: registry.access.redhat.com/ubi9:latest
+          command:
+            - bash
+            - -c
+            - |
+              echo "Waiting for postgres:5432 ..."
+              until bash -c "echo > /dev/tcp/postgres/5432" 2>/dev/null; do sleep 2; done
+              echo "PostgreSQL is up"
+      containers:
+        - name: feast-apply
+          image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              echo "=== Running feast apply ==="
+              cd /app/src/feature_store
+              feast apply
+              echo "=== feast apply complete ==="
+          envFrom:
+            - configMapRef:
+                name: fkm-config
+            - secretRef:
+                name: fkm-credentials
+          volumeMounts:
+            - name: feast-config
+              mountPath: /app/src/feature_store/feature_store.yaml
+              subPath: feature_store.yaml
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: feast-config
+          configMap:
+            name: feast-config
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: feast-materialize
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    stage: "04-feast-materialize"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        job: feast-materialize
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-redis
+          image: registry.access.redhat.com/ubi9:latest
+          command:
+            - bash
+            - -c
+            - |
+              echo "Waiting for redis:6379 ..."
+              until bash -c "echo > /dev/tcp/redis/6379" 2>/dev/null; do sleep 2; done
+              echo "Redis is up"
+      containers:
+        - name: feast-materialize
+          image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+          command: ["python3", "-m", "src.feature_store.feast_workflow", "materialize"]
+          envFrom:
+            - configMapRef:
+                name: fkm-config
+            - secretRef:
+                name: fkm-credentials
+          volumeMounts:
+            - name: feast-config
+              mountPath: /app/src/feature_store/feature_store.yaml
+              subPath: feature_store.yaml
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: feast-config
+          configMap:
+            name: feast-config
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ml-pipeline
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    stage: "05-ml-pipeline"
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        job: ml-pipeline
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-mlflow
+          image: registry.access.redhat.com/ubi9:latest
+          command:
+            - bash
+            - -c
+            - |
+              echo "Waiting for mlflow-server:5000 ..."
+              until bash -c "echo > /dev/tcp/mlflow-server/5000" 2>/dev/null; do sleep 2; done
+              echo "MLflow is up"
+      containers:
+        - name: pipeline
+          image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+          command: ["python3", "-m", "src.pipeline.run_pipeline"]
+          envFrom:
+            - configMapRef:
+                name: fkm-config
+            - secretRef:
+                name: fkm-credentials
+          volumeMounts:
+            - name: feast-config
+              mountPath: /app/src/feature_store/feature_store.yaml
+              subPath: feature_store.yaml
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+      volumes:
+        - name: feast-config
+          configMap:
+            name: feast-config
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: promote-model
+  namespace: lineage
+  labels:
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+    stage: "06-promote"
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        job: promote-model
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: promote
+          image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+          command:
+            - python3
+            - -c
+            - |
+              import os, mlflow
+              from mlflow.tracking import MlflowClient
+
+              tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow-server:5000")
+              model_name = os.getenv("MODEL_NAME", "customer_churn_model")
+
+              mlflow.set_tracking_uri(tracking_uri)
+              client = MlflowClient()
+
+              try:
+                  mv = client.get_model_version_by_alias(model_name, "champion")
+                  print(f"Champion model: {model_name} v{mv.version}")
+                  print("Model is ready for serving.")
+              except Exception as e:
+                  print(f"No 'champion' alias found for {model_name}: {e}")
+                  # Set latest version as champion
+                  versions = client.search_model_versions(
+                      f"name='{model_name}'",
+                      order_by=["version_number DESC"],
+                      max_results=1,
+                  )
+                  if versions:
+                      v = versions[0].version
+                      client.set_registered_model_alias(model_name, "champion", str(v))
+                      print(f"Set {model_name} v{v} as champion")
+                  else:
+                      print(f"No versions found for {model_name}")
+          envFrom:
+            - configMapRef:
+                name: fkm-config
+            - secretRef:
+                name: fkm-credentials
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-api
+  namespace: lineage
+  labels:
+    app: inference-api
+    app.kubernetes.io/part-of: feast-kfp-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: inference-api
+  template:
+    metadata:
+      labels:
+        app: inference-api
+    spec:
+      initContainers:
+        - name: wait-for-redis
+          image: registry.access.redhat.com/ubi9:latest
+          command:
+            - bash
+            - -c
+            - |
+              echo "Waiting for redis:6379 ..."
+              until bash -c "echo > /dev/tcp/redis/6379" 2>/dev/null; do sleep 2; done
+              echo "Redis is up"
+        - name: wait-for-mlflow
+          image: registry.access.redhat.com/ubi9:latest
+          command:
+            - bash
+            - -c
+            - |
+              echo "Waiting for mlflow-server:5000 ..."
+              until bash -c "echo > /dev/tcp/mlflow-server/5000" 2>/dev/null; do sleep 2; done
+              echo "MLflow is up"
+      containers:
+        - name: inference-api
+          image: image-registry.openshift-image-registry.svc:5000/lineage/fkm-app:latest
+          command: ["uvicorn", "src.serving.app:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: fkm-config
+            - secretRef:
+                name: fkm-credentials
+          volumeMounts:
+            - name: feast-config
+              mountPath: /app/src/feature_store/feature_store.yaml
+              subPath: feature_store.yaml
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: feast-config
+          configMap:
+            name: feast-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference-api
+  namespace: lineage
+  labels:
+    app: inference-api
+spec:
+  selector:
+    app: inference-api
+  ports:
+    - port: 8000
+      targetPort: 8000

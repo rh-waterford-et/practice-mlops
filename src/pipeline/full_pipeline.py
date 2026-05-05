@@ -133,6 +133,7 @@ def full_pipeline(
 
     eval_task = ds_evaluation(
         train_result_json=train_task.output,
+        tracking_uri=tracking_uri,
     )
     eval_task.set_caching_options(False)
 

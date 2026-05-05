@@ -111,14 +111,8 @@ You can run only one stage: `./scripts/run_all.sh etl`, `feast`, `pipeline`, or 
 
 ### OpenShift
 
-- **Deploy** (`openshift/deploy.sh`): Creates namespace, secrets, configmaps, PVCs, builds images (e.g. `fkm-app`), deploys MinIO, PostgreSQL, Redis, MLflow, then runs Jobs in order:
-  - `01-minio-seed` — put CSV in MinIO  
-  - `02-etl` — ETL into PostgreSQL  
-  - `03-feast-apply` — Feast apply  
-  - `04-feast-materialize` — materialize to Redis  
-  - `05-ml-pipeline` — run the ML pipeline (train + evaluate + register)  
-  - `06-promote-model` — promote to Production  
-- Then deploys the FastAPI inference API and exposes Routes (MLflow, MinIO, inference API).
+- **Deploy** (`openshift/deploy.sh`): Applies `openshift/lineage-openshift-ai.yaml` (split via `lineage_manifest.py` so Jobs run after infra is ready), builds images (`fkm-app`, `spark-etl`), then runs bootstrap Jobs in order: MinIO seed, ETL, Feast apply, Feast materialize, ML pipeline (`run_pipeline.py`), promote model, inference API, Routes, and OpenShift AI **DSPA** (Data Science Pipelines) from the same manifest.
+- **OpenShift AI** (`openshift/deploy-dsp.sh`): Ensures DSPA + workflow-controller OpenLineage env patch, compiles and uploads `customer_churn_pipeline.yaml`.
 
 So the same flow (ETL → Feast → pipeline → promote → serve) is executed as Jobs and services on the cluster.
 

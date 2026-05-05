@@ -13,7 +13,6 @@ Request flow
 import logging
 import os
 from contextlib import asynccontextmanager
-from functools import lru_cache
 from typing import Any
 
 import mlflow
@@ -23,7 +22,6 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException
 from feast import FeatureStore
 from pydantic import BaseModel, Field
-from sklearn.preprocessing import LabelEncoder
 
 logger = logging.getLogger(__name__)
 

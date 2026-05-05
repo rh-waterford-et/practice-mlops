@@ -9,14 +9,18 @@ STAGE 2  –  Feast workflow helpers.
 import logging
 import subprocess
 import sys
-import os
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
 from feast import FeatureStore
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from configs.settings import FEAST_REPO_PATH
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from configs.settings import FEAST_REPO_PATH, PG_URL, WAREHOUSE_TABLE, validate_sql_identifier
+from src.pipeline.feast_runtime_yaml import CHURN_HISTORICAL_FEATURE_REFS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 logger = logging.getLogger(__name__)
@@ -74,15 +78,7 @@ def get_historical_features(
     store = get_store(repo_path)
 
     if features is None:
-        features = [
-            "customer_features_view:tenure_months",
-            "customer_features_view:monthly_charges",
-            "customer_features_view:total_charges",
-            "customer_features_view:num_support_tickets",
-            "customer_features_view:contract_type",
-            "customer_features_view:internet_service",
-            "customer_features_view:payment_method",
-        ]
+        features = list(CHURN_HISTORICAL_FEATURE_REFS)
 
     logger.info("Fetching historical features for %d entities", len(entity_df))
     training_df = store.get_historical_features(
@@ -108,12 +104,12 @@ if __name__ == "__main__":
         materialize()
     elif args.action == "historical":
         from sqlalchemy import create_engine, text
-        from configs.settings import PG_URL, WAREHOUSE_TABLE
 
+        safe_table = validate_sql_identifier(WAREHOUSE_TABLE)
         engine = create_engine(PG_URL)
         with engine.connect() as conn:
             entity_df = pd.read_sql(
-                text(f"SELECT entity_id, event_timestamp FROM {WAREHOUSE_TABLE}"),
+                text(f"SELECT entity_id, event_timestamp FROM {safe_table}"),
                 conn,
             )
         entity_df["event_timestamp"] = pd.to_datetime(entity_df["event_timestamp"], utc=True)

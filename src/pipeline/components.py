@@ -1,30 +1,25 @@
 """
-STAGE 3  –  Kubeflow Pipeline component functions.
+STAGE 3  –  Shared ML pipeline steps (local ``run_pipeline`` + thin KFP wrappers).
 
-Each function is a self-contained KFP component that can be compiled
-into a container step.  When running locally (outside KFP) the same
-functions can be called directly from `run_pipeline.py`.
+Local path: ``run_pipeline`` calls these functions on in-memory DataFrames.
 
-Components
-----------
-1. data_extraction     – Feast historical features → DataFrame
-2. data_validation     – Null / schema / distribution checks
-3. feature_engineering – Scaling & encoding transforms
-4. model_training      – XGBoost training + MLflow logging
-5. evaluation          – Compute & log final metrics
-6. model_registration  – Conditionally register in MLflow Registry
+KFP path: ``kfp_pipeline`` ``@dsl.component`` bodies delegate here where
+possible; Feast runtime YAML patching uses :func:`data_extraction_for_kfp`,
+and Great Expectations + OpenLineage live in ``gx_churn_validation`` instead
+of the lighter :func:`data_validation` used locally.
 """
 
-import json
 import logging
 import os
 import sys
-from typing import NamedTuple
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 logger = logging.getLogger(__name__)
@@ -45,12 +40,15 @@ def data_extraction(
     entity_id + event_timestamp pair is used for the join.
     """
     from sqlalchemy import create_engine, text
+
+    from configs.settings import validate_sql_identifier
     from src.feature_store.feast_workflow import get_historical_features
 
+    safe_table = validate_sql_identifier(table_name)
     engine = create_engine(pg_url)
     with engine.connect() as conn:
         entity_df = pd.read_sql(
-            text(f"SELECT entity_id, event_timestamp, churn FROM {table_name}"),
+            text(f"SELECT entity_id, event_timestamp, churn FROM {safe_table}"),
             conn,
         )
     engine.dispose()
@@ -191,9 +189,7 @@ def evaluation(train_result: dict, tracking_uri: str) -> dict:
     (Metrics are already computed during training; this step is an
     explicit verification / aggregation point.)
     """
-    import mlflow
-
-    mlflow.set_tracking_uri(tracking_uri)
+    logger.debug("STEP 5  tracking_uri=%s", tracking_uri)
     metrics = train_result["metrics"]
     logger.info(
         "STEP 5  Evaluation  ROC-AUC=%.4f  F1=%.4f  Precision=%.4f  Recall=%.4f",
@@ -208,6 +204,38 @@ def evaluation(train_result: dict, tracking_uri: str) -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 # STEP 6 — Model Registration
 # ═══════════════════════════════════════════════════════════════════════
+def patch_feast_repo_for_kfp(
+    feast_repo_path: str,
+    pg_host: str,
+    redis_host: str,
+) -> str:
+    """Write ``feature_store.yaml`` for in-cluster Postgres/Redis (KFP / OpenShift)."""
+    from src.pipeline.feast_runtime_yaml import write_feast_feature_store_yaml
+
+    ol_namespace = os.environ.get("OPENLINEAGE_NAMESPACE", "default")
+    feast_project = ol_namespace.replace("-", "_")
+    path = write_feast_feature_store_yaml(
+        feast_repo_path,
+        feast_project=feast_project,
+        pg_host=pg_host,
+        redis_host=redis_host,
+    )
+    logger.info("Patched Feast repo for KFP: %s (ol_ns=%s)", path, ol_namespace)
+    return path
+
+
+def data_extraction_for_kfp(
+    pg_url: str,
+    feast_repo_path: str,
+    table_name: str,
+    pg_host: str,
+    redis_host: str,
+) -> pd.DataFrame:
+    """Same as :func:`data_extraction` after patching ``feature_store.yaml`` for K8s endpoints."""
+    patch_feast_repo_for_kfp(feast_repo_path, pg_host, redis_host)
+    return data_extraction(pg_url, feast_repo_path, table_name)
+
+
 def model_registration(
     train_result: dict,
     metrics: dict,
@@ -229,20 +257,24 @@ def model_registration(
         )
         return {"registered": False, "reason": "below_threshold"}
 
-    version = register_model(
-        model_uri=train_result["model_uri"],
-        model_name=model_name,
-        tracking_uri=tracking_uri,
-    )
+    try:
+        version = register_model(
+            model_uri=train_result["model_uri"],
+            model_name=model_name,
+            tracking_uri=tracking_uri,
+        )
 
-    promote_to_alias(
-        model_name=model_name,
-        version=version,
-        alias="champion",
-        tracking_uri=tracking_uri,
-    )
+        promote_to_alias(
+            model_name=model_name,
+            version=version,
+            alias="champion",
+            tracking_uri=tracking_uri,
+        )
 
-    logger.info(
-        "STEP 6  Registered %s v%d → alias 'champion'", model_name, version,
-    )
-    return {"registered": True, "model_name": model_name, "version": version, "alias": "champion"}
+        logger.info(
+            "STEP 6  Registered %s v%d → alias 'champion'", model_name, version,
+        )
+        return {"registered": True, "model_name": model_name, "version": version, "alias": "champion"}
+    except Exception as exc:
+        logger.warning("STEP 6  Model registration failed: %s", exc)
+        return {"registered": False, "reason": str(exc)[:200]}

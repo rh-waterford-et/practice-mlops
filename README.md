@@ -1,7 +1,7 @@
-# End-to-End ML System — Feast · KFP · MLflow
+# End-to-End ML System — Feast · KFP · MLflow · OpenLineage
 
 A production-style machine learning system for **customer churn prediction**
-using MinIO, PostgreSQL, Feast, Redis, Kubeflow Pipelines, MLflow, and FastAPI.
+using MinIO, PostgreSQL, Feast, Redis, Kubeflow Pipelines (KFP), MLflow, OpenLineage / Marquez, FastAPI, and optional OpenShift AI (Data Science Pipelines).
 
 ---
 
@@ -20,20 +20,52 @@ PostgreSQL  (Data Warehouse + Feast offline store)
 Feast  (feature definitions, materialization → Redis)
      │
      ▼
-Kubeflow Pipeline
-  ├─ Step 1  Data Extraction (Feast historical features)
-  ├─ Step 2  Data Validation
-  ├─ Step 3  Feature Engineering
-  ├─ Step 4  Model Training (XGBoost + MLflow tracking)
-  ├─ Step 5  Evaluation (ROC-AUC, F1, Precision, Recall)
-  └─ Step 6  Model Registration (MLflow Registry → Staging/Production)
+Kubeflow Pipeline (cluster or local runner)
+  ├─ Platform: Spark ETL, Feast apply / materialize
+  ├─ DS steps: Data extraction → GX validation → Feature engineering
+  ├─ Training → Evaluation → Model registration (MLflow)
      │
      ▼
 FastAPI Inference Service
   └─ Feast online store (Redis) → Model → Prediction
 ```
 
-For a detailed description of the architecture and operation, see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+Lineage from pipeline steps can be sent to **Marquez** (OpenLineage). On OpenShift AI, the workflow controller is patched so **`OPENLINEAGE_NAMESPACE`** matches the pod namespace (so runs appear under the correct project in Marquez).
+
+For more depth (decorators, RAG path, file-by-file roles), see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+---
+
+## Program logic
+
+End-to-end flow is **data landing → warehouse → Feast → training artifacts → serving**. The same conceptual stages run locally (Compose + Python modules), as Kubernetes Jobs (`openshift/lineage-openshift-ai.yaml`), or as **Data Science Pipelines** components (`src/pipeline/kfp_pipeline.py`).
+
+| Stage | Responsibility | Main code |
+|-------|------------------|-----------|
+| **0 – Raw data** | Synthetic or real churn CSV in MinIO bucket `raw-data` | `data/generate_dataset.py`, seed Jobs |
+| **1 – ETL** | Load CSV, clean / normalise, write warehouse table `customer_features` | Local: `src.etl.run_etl` (`extract` → `transform` → `load`). Cluster: Spark image runs `src/etl/spark_etl.py` (+ OpenLineage listener variant) |
+| **2 – Feast** | Register feature views (`feast apply`), copy offline → online Redis (`materialize`) | `src/feature_store/feast_workflow.py`, definitions in `src/feature_store/definitions.py` |
+| **3 – ML pipeline** | Point-in-time features → validation → engineering → XGBoost + MLflow → optional registry | Local orchestrator: `src.pipeline.run_pipeline`. Steps: `src.pipeline.components`. On cluster, DS components call the same helpers; validation may use Great Expectations (`src.pipeline.gx_churn_validation`) |
+| **4 – Training detail** | Label encoding, `scale_pos_weight`, metrics, artifact logging | `src.training.trainer.py` (OpenLineage dataset facet via `openlineage_oai`) |
+| **5 – Registry & serving** | Champion alias / stages; FastAPI loads `models:/…@champion` + Feast online features | `src.training.registry`, `src.serving.app` |
+
+**Configuration** is read once at import/runtime from environment variables (`configs/settings.py`) so Jobs and pods do not need different source trees.
+
+**OpenLineage**: KFP components wrap work in `openlineage_oai.adapters.kfp.kfp_lineage`; Spark uses the listener; MLflow training logs dataset lineage. On OpenShift AI, `deploy-dsp.sh` patches the workflow controller so `OPENLINEAGE_NAMESPACE` matches the pod namespace for correct Marquez namespaces.
+
+---
+
+## Inference HTTP API (`src.serving.app`)
+
+Run under Uvicorn inside Compose (`docker-compose.yml`) or the `fkm-app` Deployment on OpenShift.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/health` | JSON: `status`, `model_loaded`, `feast_connected` |
+| `POST` | `/predict` | Body: `{"entity_ids": [<int>, …]}`. Response: per-entity `churn_probability`, `churn_prediction`, and resolved `features` |
+| `POST` | `/reload-model` | Reload champion model from MLflow without restarting the pod |
+
+OpenAPI docs: `/docs` when the service is running.
 
 ---
 
@@ -41,204 +73,302 @@ For a detailed description of the architecture and operation, see **[docs/ARCHIT
 
 ```
 .
-├── Dockerfile                   # Unified app image (ETL + Feast + Pipeline + API)
-├── Dockerfile.mlflow            # MLflow tracking server image
-├── Dockerfile.api               # FastAPI inference image (Docker Compose)
+├── Dockerfile                   # Unified app image (ETL + Feast + Pipeline + API) — OpenShift BuildConfig
+├── Dockerfile.spark             # Spark + OpenLineage listener — OpenShift spark-etl build
+├── Dockerfile.mlflow            # Optional standalone MLflow image (Compose / tooling)
 ├── docker-compose.yml           # Local dev environment
 ├── requirements.txt             # Python dependencies
-├── .env                         # Local environment variables
+├── customer_churn_pipeline.yaml # Compiled churn-only KFP package (regenerated; see KFP section)
+├── full_pipeline.yaml           # Generated by `python -m src.pipeline.full_pipeline` (churn + RAG; optional)
+├── rag_ingestion_pipeline.yaml  # Optional RAG-only compile output (see `src/rag/`)
+├── .env                         # Local environment variables (optional)
 │
 ├── configs/
-│   └── settings.py              # Centralised configuration
+│   └── settings.py              # Centralised config (env-driven; works locally & on-cluster)
 │
 ├── data/
 │   ├── generate_dataset.py      # Synthetic dataset generator
-│   └── customers.csv            # Generated sample data
+│   └── customers.csv            # Sample data
 │
-├── scripts/                     # Docker Compose local scripts
+├── openshift/                   # Single-manifest OpenShift / OpenShift AI deploy
+│   ├── lineage-openshift-ai.yaml   # Namespace, storage, Marquez, MLflow, DSPA, Jobs, Routes, …
+│   ├── render_namespace.py         # Render manifest for another project (e.g. fkm)
+│   ├── lineage_manifest.py         # Split manifest: infra vs Jobs vs DSPA-only
+│   ├── deploy.sh                   # Apply stack + builds + bootstrap Jobs
+│   ├── deploy-dsp.sh               # DSPA + OpenLineage env patch + compile/upload/run KFP
+│   ├── status.sh                   # Quick oc status (default namespace: lineage)
+│   └── test-api.sh                 # curl inference Route (default namespace: lineage)
+│
+├── openlineage-oai/             # In-repo OpenLineage helpers (KFP context, MLflow tracking store)
+├── scripts/                     # Docker Compose helpers
 │   ├── start_services.sh
 │   ├── run_all.sh
 │   └── test_inference.sh
 │
-├── openshift/                   # OpenShift deployment manifests
-│   ├── deploy.sh                # One-command deploy to OpenShift
-│   ├── status.sh                # Namespace status check
-│   ├── test-api.sh              # Smoke-test via Route
-│   ├── base/
-│   │   ├── namespace.yaml       # lineage namespace
-│   │   ├── secret.yaml          # Credentials
-│   │   ├── configmap.yaml       # Service endpoints
-│   │   ├── feast-config.yaml    # Feast feature_store.yaml (cluster)
-│   │   ├── pvc.yaml             # MinIO + PostgreSQL storage
-│   │   ├── buildconfig.yaml     # ImageStreams + BuildConfigs
-│   │   ├── minio.yaml           # MinIO Deployment + Service
-│   │   ├── postgres.yaml        # PostgreSQL Deployment + Service
-│   │   ├── redis.yaml           # Redis Deployment + Service
-│   │   ├── mlflow.yaml          # MLflow Deployment + Service
-│   │   ├── inference-api.yaml   # FastAPI Deployment + Service
-│   │   └── routes.yaml          # OpenShift Routes (TLS)
-│   └── jobs/
-│       ├── 01-minio-seed.yaml   # Seed MinIO with CSV
-│       ├── 02-etl.yaml          # ETL: MinIO → PostgreSQL
-│       ├── 03-feast-apply.yaml  # Feast apply
-│       ├── 04-feast-materialize.yaml  # Feast materialize
-│       ├── 05-ml-pipeline.yaml  # Train + evaluate + register
-│       └── 06-promote-model.yaml# Promote to Production
-│
 ├── src/
-│   ├── etl/
-│   │   ├── extract.py           # Stage 1A – MinIO extraction
-│   │   ├── transform.py         # Stage 1B – Cleaning & normalisation
-│   │   ├── load.py              # Stage 1C – PostgreSQL load
-│   │   └── run_etl.py           # Stage 1  – ETL orchestrator
-│   │
-│   ├── feature_store/
-│   │   ├── feature_store.yaml   # Feast configuration (local dev)
-│   │   ├── definitions.py       # Entity, source, feature view
-│   │   └── feast_workflow.py    # apply / materialize / historical
-│   │
-│   ├── pipeline/
-│   │   ├── components.py        # Stage 3  – KFP component functions
-│   │   ├── run_pipeline.py      # Stage 3  – Local pipeline runner
-│   │   └── kfp_pipeline.py      # Stage 3  – KFP DSL + compiler
-│   │
-│   ├── training/
-│   │   ├── trainer.py           # Stage 4  – XGBoost + MLflow logging
-│   │   └── registry.py          # Stage 4  – Model Registry helpers
-│   │
-│   └── serving/
-│       └── app.py               # Stage 5  – FastAPI inference service
+│   ├── etl/                     # Pandas ETL + Spark ETL (MinIO → warehouse)
+│   ├── feature_store/           # Feast repo (definitions, workflows)
+│   ├── pipeline/                # components, kfp_pipeline, full_pipeline, run_pipeline, upload_pipeline, dsp_client
+│   ├── rag/                     # Optional Milvus RAG pipeline + query helpers (`src/rag/README.md`)
+│   ├── training/                # Trainer + MLflow registry helpers
+│   └── serving/                 # FastAPI inference app
 │
-└── tests/                       # (placeholder for unit tests)
+└── docs/
+    └── ARCHITECTURE.md
 ```
 
 ---
 
-## Quick Start
+## Quick Start (Local — Docker Compose)
 
 ### Prerequisites
 
-| Tool           | Version |
-|----------------|---------|
-| Docker Desktop | ≥ 4.x  |
-| Python         | ≥ 3.10 |
-| pip / venv     | latest  |
+| Tool           | Notes |
+|----------------|--------|
+| Docker Desktop | ≥ 4.x |
+| Python         | ≥ 3.10 for general scripts; **3.11** recommended if you compile/upload KFP (`kfp`, `kfp-kubernetes`) |
 
 ### 1. Start infrastructure
 
 ```bash
-# Build & start all containers (MinIO, PostgreSQL, Redis, MLflow, API)
 ./scripts/start_services.sh
 ```
 
-Services & UIs:
+| Service       | URL                        | Credentials        |
+|---------------|----------------------------|--------------------|
+| MinIO Console | http://localhost:9001      | minioadmin / minioadmin123 |
+| MLflow UI     | http://localhost:5000      | —                  |
+| Inference API | http://localhost:8000/docs | —                  |
 
-| Service       | URL                           | Credentials             |
-|---------------|-------------------------------|-------------------------|
-| MinIO Console | http://localhost:9001         | minioadmin / minioadmin  |
-| MLflow UI     | http://localhost:5000         | —                       |
-| Inference API | http://localhost:8000/docs    | —                       |
-
-### 2. Install Python dependencies (local)
+### 2. Python environment
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+python3.11 -m venv .venv && source .venv/bin/activate   # recommended for KFP tooling
 pip install -r requirements.txt
 ```
 
-### 3. Generate sample data (already done if CSV exists)
+### 3. Sample data
 
 ```bash
-python3 data/generate_dataset.py
+python data/generate_dataset.py    # if data/customers.csv is missing
 ```
 
-### 4. Run end-to-end
+### 4. Run end-to-end locally
 
 ```bash
-# Run all stages in sequence
-./scripts/run_all.sh
+./scripts/run_all.sh                 # etl → feast → pipeline → optional kfp compile
 ```
 
-Or run stages individually:
+Stages individually:
 
 ```bash
-# Stage 1 – ETL
 ./scripts/run_all.sh etl
-
-# Stage 2 – Feast
 ./scripts/run_all.sh feast
-
-# Stage 3 – Pipeline (train + register)
-./scripts/run_all.sh pipeline
-
-# Compile KFP YAML
-./scripts/run_all.sh kfp
+./scripts/run_all.sh pipeline       # local Python runner: src.pipeline.run_pipeline
+./scripts/run_all.sh kfp            # compile customer_churn_pipeline.yaml via scripts
 ```
 
-### 5. Test the inference API
+### 5. Test inference
 
 ```bash
 ./scripts/test_inference.sh
 
-# Or manually:
 curl -X POST http://localhost:8000/predict \
-  -H "Content-Type: application/json" \
+  -H 'Content-Type: application/json' \
   -d '{"entity_ids": [1, 2, 3]}'
+```
+
+### Local teardown
+
+```bash
+docker compose down -v
 ```
 
 ---
 
-## Stage Details
+## Configuration (`configs/settings.py`)
 
-### Stage 1 — ETL
+Behaviour is driven by **environment variables** so the same code runs in Compose, Jobs, and KFP pods. If `PG_URL` is set (typical on-cluster), it overrides the URL built from `PG_HOST` / `PG_PORT` / credentials.
 
-`src/etl/run_etl.py` downloads the CSV from MinIO, cleans nulls (median
-imputation), min-max normalises numerical columns, then writes the result
-to the `customer_features` table in PostgreSQL.
+| Variable | Purpose |
+|----------|---------|
+| `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD`, `PG_DATABASE` | Warehouse / Feast offline DB |
+| `PG_URL` | Full PostgreSQL URL when injected by Secrets / manifests (overrides composed URL) |
+| `REDIS_HOST`, `REDIS_PORT` | Feast online store (**ports accept numeric or Kubernetes `tcp://host:port`**) |
+| `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`, `MINIO_SECURE` | Raw CSV and S3-compatible access |
+| `MLFLOW_TRACKING_URI` | Tracking server (often `openlineage+http://mlflow-server:5000` on-cluster) |
+| `MLFLOW_S3_ENDPOINT_URL`, `MLFLOW_S3_ARTIFACT_ROOT` | Artifact storage for MLflow runs |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Used by MLflow client when logging artifacts to MinIO/S3 |
+| `MLFLOW_EXPERIMENT_NAME` | Default experiment (e.g. `customer_churn_lineage`) |
+| `MODEL_NAME` | Registered model name (default `customer_churn_model`) |
+| `MODEL_ROC_AUC_THRESHOLD` | Minimum ROC-AUC to register/promote in pipeline step 6 (default `0.70`) |
+| `DATASET_SOURCE_URI` | Optional URI facet for training dataset lineage in MLflow |
+| `FEAST_REPO_PATH` | Path to Feast repo (`src/feature_store` locally; `/app/src/feature_store` in images) |
+| `RAW_CSV_OBJECT` | Object key in MinIO for churn CSV (default `customers.csv`) |
+| `OPENSHIFT_APP_NAMESPACE` | OpenShift project name for image pulls and **DSP/KFP compile defaults** |
+| `OPENLINEAGE_NAMESPACE` | OpenLineage logical namespace (workflow-controller patch on OpenShift AI) |
 
-### Stage 2 — Feast
+DSP helper scripts read **`OPENSHIFT_APP_NAMESPACE`** (default `lineage`). **`openshift/status.sh`** and **`openshift/test-api.sh`** use the same variable so you can run `OPENSHIFT_APP_NAMESPACE=fkm ./openshift/status.sh` without editing files.
 
-- **`feature_store.yaml`** — offline store = PostgreSQL, online store = Redis
-- **`definitions.py`** — entity, PostgreSQL data source, feature view
-- **`feast apply`** — registers metadata in the SQL-backed registry
-- **`feast materialize`** — copies latest features from PostgreSQL into Redis
+---
 
-### Stage 3 — Kubeflow Pipeline
+## Kubeflow Pipelines (compile, upload, run)
 
-Six sequential components:
+### Compile `customer_churn_pipeline.yaml`
 
-1. **Data Extraction** — Feast `get_historical_features()` with point-in-time join
-2. **Data Validation** — null/schema/distribution checks
-3. **Feature Engineering** — derived ratios (`charges_per_month`, `ticket_rate`)
-4. **Model Training** — XGBoost classifier, params/metrics/model logged to MLflow
-5. **Evaluation** — ROC-AUC, F1, Precision, Recall
-6. **Model Registration** — if ROC-AUC ≥ threshold → MLflow Registry → Staging
+From the **repository root**, with dependencies installed:
 
-The pipeline can run locally (`run_pipeline.py`) or be compiled to a KFP YAML
-(`kfp_pipeline.py`) for submission to a Kubeflow cluster.
+```bash
+python -m src.pipeline.kfp_pipeline
+```
 
-### Stage 4 — MLflow
+This writes/overwrites **`customer_churn_pipeline.yaml`**. Component images default to:
 
-- **Tracking:** experiment name, run ID, hyperparameters, metrics, model artifact
-- **Registry:** model name, version, stage lifecycle (None → Staging → Production → Archived)
-- **Utilities:** `registry.py` provides promote, archive, and rollback helpers
+`image-registry.openshift-image-registry.svc:5000/<namespace>/fkm-app:latest` (and `spark-etl` where used).
 
-### Stage 5 — Online Inference
+Set the namespace segment to match your OpenShift project:
 
-FastAPI service at `/predict`:
+```bash
+export OPENSHIFT_APP_NAMESPACE=fkm    # or lineage
+python -m src.pipeline.kfp_pipeline
+```
 
-1. Receives `entity_ids`
-2. Queries Feast online store (Redis) for latest features
-3. Loads the Production model from MLflow
-4. Returns churn probability + binary prediction per entity
+### Combined churn + RAG pipeline (optional)
 
-Hot-reload: `POST /reload-model` fetches the latest Production model without restart.
+`src.pipeline.full_pipeline` chains the churn KFP graph with RAG ingestion (MinIO documents → chunks → embeddings → Milvus) and a small inference smoke step. Compile from repo root:
+
+```bash
+export OPENSHIFT_APP_NAMESPACE=<your-project>
+python -m src.pipeline.full_pipeline   # writes full_pipeline.yaml
+```
+
+RAG-only DSL and local notes live under **`src/rag/`** and **`src/rag/README.md`**. You still upload/run the resulting YAML through the same DSP API pattern as the churn pipeline (adjust pipeline name/version in code or UI as needed).
+
+### Upload to OpenShift AI Data Science Pipelines
+
+Requires **`oc login`** and a DSP API route for your namespace.
+
+```bash
+export OPENSHIFT_APP_NAMESPACE=fkm    # must match project where DSPA runs
+python -m src.pipeline.upload_pipeline
+```
+
+This compiles again, uploads (or adds a version), creates an experiment run, and prints dashboard links. The same flow is wrapped by **`./openshift/deploy-dsp.sh upload`** (see below).
+
+---
+
+## OpenShift deployment
+
+### Prerequisites
+
+| Requirement | Notes |
+|-------------|--------|
+| `oc` | OpenShift CLI, logged in (`oc login`) |
+| Project permissions | Create namespace / apply manifests / start builds |
+| OpenShift AI | Operators for Data Science Pipelines if you use DSPA |
+
+The canonical manifest is **`openshift/lineage-openshift-ai.yaml`**. It defines Marquez, MLflow, MinIO, Postgres, Redis, Feast bootstrap Jobs, inference Deployment, **DataSciencePipelinesApplication (`dspa`)**, Routes, and BuildConfigs for **`fkm-app`** and **`spark-etl`**.
+
+### Choosing a namespace
+
+- **Default** scripts target **`lineage`**.
+- To deploy in parallel (e.g. **`fkm`**) without editing YAML by hand, pass **`--namespace`** or set **`OPENSHIFT_APP_NAMESPACE`**.
+
+Under the hood, **`openshift/render_namespace.py`** rewrites:
+
+- `Namespace` metadata name  
+- Every resource **`metadata.namespace`**  
+- In-cluster MinIO host references (`mlflow-minio.<ns>.svc`)  
+- Internal image paths (`.../5000/<ns>/fkm-app` and `spark-etl`)
+
+Example manual render:
+
+```bash
+python3 openshift/render_namespace.py openshift/lineage-openshift-ai.yaml fkm \
+  | python3 openshift/lineage_manifest.py -f - emit-infra \
+  | oc apply -f -
+```
+
+### `deploy.sh` — stack + builds + bootstrap Jobs
+
+```bash
+./openshift/deploy.sh                              # same as: … all  (default namespace lineage)
+./openshift/deploy.sh --namespace fkm all          # full deploy into project fkm
+OPENSHIFT_APP_NAMESPACE=fkm ./openshift/deploy.sh infra
+
+./openshift/deploy.sh infra    # Namespace + workloads + image builds (no Jobs)
+./openshift/deploy.sh build    # apply infra slice + rebuild images only
+./openshift/deploy.sh jobs     # materialize & run bootstrap Jobs only (requires healthy infra)
+
+./openshift/deploy.sh --namespace fkm teardown
+```
+
+**Bootstrap Job order:** `minio-seed` → `etl-job` → `feast-apply` → `feast-materialize` → `ml-pipeline` → `promote-model`.
+
+**Interpreter:** host-side helpers prefer **`python3.11`** when available (for consistency). Override with **`PYTHON3_EXEC=/path/to/python`**.
+
+After **`deploy.sh`** completes, it prints Routes (TLS hostnames) for inference, MLflow, MinIO console, Marquez UI.
+
+### `deploy-dsp.sh` — OpenShift AI pipelines + lineage patch + upload
+
+Run **after** infra exists in that namespace (MinIO, DSPA CR applied).
+
+```bash
+OPENSHIFT_APP_NAMESPACE=fkm ./openshift/deploy-dsp.sh all    # DSPA reconcile + OL patch + upload/run
+./openshift/deploy-dsp.sh --namespace fkm dspa             # DSPA + ConfigMap patch only
+./openshift/deploy-dsp.sh --namespace fkm upload           # compile + upload + create run
+```
+
+**What it does:**
+
+1. Ensures MinIO bucket **`pipeline-artifacts`** exists (for KFP artifact storage).  
+2. Applies **DSPA Secret + DataSciencePipelinesApplication** from the rendered manifest.  
+3. Patches **`ds-pipeline-workflow-controller-dspa`** so pods get **`OPENLINEAGE_NAMESPACE`** from the pod namespace (Marquez namespaces align with your OpenShift project).  
+4. **`upload`**: uses **`PYTHON3`** / **`PYTHON3_EXEC`** and **`OPENSHIFT_APP_NAMESPACE`** to compile and call **`python -m src.pipeline.upload_pipeline`**.
+
+### Routes (typical names)
+
+| Route              | Purpose |
+|--------------------|---------|
+| `inference-api`    | FastAPI `/docs` |
+| `mlflow-server`    | MLflow UI |
+| `mlflow-minio-console` | MinIO browser |
+| `marquez`          | Marquez API (UI may redirect; see also `marquez-web`) |
+| `marquez-web`      | Marquez web UI |
+| `ds-pipeline-dspa` | KFP / DSP HTTP API (OpenShift AI) |
+
+Resolve hosts:
+
+```bash
+oc get routes -n <namespace> -o custom-columns='NAME:.metadata.name,HOST:.spec.host'
+```
+
+### Status and smoke tests
+
+```bash
+export OPENSHIFT_APP_NAMESPACE=fkm   # optional; default is lineage
+./openshift/status.sh
+./openshift/test-api.sh
+
+# Equivalent manual curl:
+HOST=$(oc get route inference-api -n fkm -o jsonpath='{.spec.host}')
+curl -sk "https://$HOST/predict" -H 'Content-Type: application/json' -d '{"entity_ids":[1,2,3]}'
+```
+
+### Re-run bootstrap Jobs
+
+Jobs are defined in the manifest; **`deploy.sh jobs`** deletes prior Jobs by name and reapplies in order. To rerun one Job manually:
+
+```bash
+oc delete job ml-pipeline -n <namespace> --ignore-not-found
+./openshift/deploy.sh --namespace <namespace> jobs   # runs full sequence again
+```
 
 ---
 
 ## Promoting a Model to Production
 
-After the pipeline registers a model version in **Staging**:
+After the pipeline registers a model in **Staging**:
 
 ```python
 from src.training.registry import transition_stage
@@ -251,7 +381,7 @@ transition_stage(
 )
 ```
 
-Then reload the inference service:
+Reload inference:
 
 ```bash
 curl -X POST http://localhost:8000/reload-model
@@ -259,95 +389,29 @@ curl -X POST http://localhost:8000/reload-model
 
 ---
 
-## OpenShift Deployment (namespace: lineage)
+## Pipeline stages (summary)
 
-### Prerequisites
-
-| Tool   | Version |
-|--------|---------|
-| `oc`   | ≥ 4.x  |
-| Logged in to your OpenShift cluster (`oc login`) |
-
-### One-command deploy
-
-```bash
-./openshift/deploy.sh
-```
-
-This script performs the following in order:
-
-1. Creates the `lineage` namespace, Secrets, ConfigMaps, PVCs
-2. Creates ImageStreams + BuildConfigs, then builds the `fkm-app` and `mlflow-server` images via `oc start-build --from-dir`
-3. Deploys MinIO, PostgreSQL, Redis, MLflow (waits for readiness)
-4. Runs 6 sequential Jobs:
-   - `01-minio-seed` — upload CSV to MinIO
-   - `02-etl` — ETL: MinIO → PostgreSQL
-   - `03-feast-apply` — register Feast entities/features
-   - `04-feast-materialize` — offline store → online store (Redis)
-   - `05-ml-pipeline` — train XGBoost + log to MLflow + register model
-   - `06-promote-model` — promote Staging → Production
-5. Deploys the FastAPI inference API
-6. Creates OpenShift Routes (TLS edge-terminated)
-
-### Partial deploys
-
-```bash
-./openshift/deploy.sh infra     # Infrastructure only (no jobs)
-./openshift/deploy.sh build     # Rebuild images only
-./openshift/deploy.sh jobs      # Run pipeline jobs only
-```
-
-### Check status
-
-```bash
-./openshift/status.sh           # Pods, services, routes, jobs, events
-oc get pods -n lineage         # Quick pod check
-oc logs job/ml-pipeline -n lineage   # View pipeline logs
-```
-
-### Test the API
-
-```bash
-./openshift/test-api.sh
-
-# Or manually:
-HOST=$(oc get route inference-api -n lineage -o jsonpath='{.spec.host}')
-curl -sk -X POST "https://$HOST/predict" \
-  -H "Content-Type: application/json" \
-  -d '{"entity_ids": [1, 2, 3]}'
-```
-
-### Exposed Routes
-
-| Service       | Route name      | Description                |
-|---------------|-----------------|----------------------------|
-| Inference API | `inference-api` | `/docs` for Swagger UI     |
-| MLflow UI     | `mlflow`        | Experiment tracking        |
-| MinIO Console | `minio-console` | Object storage browser     |
-
-### Re-run a Job
-
-```bash
-oc delete job etl-job -n lineage
-oc apply -f openshift/jobs/02-etl.yaml
-```
-
-### Teardown
-
-```bash
-# Remove everything in the namespace
-./openshift/deploy.sh teardown
-
-# Or manually:
-oc delete namespace lineage
-```
+| Stage | Local entrypoints | Notes |
+|-------|-------------------|--------|
+| ETL | `src.etl.run_etl` (pandas), Spark job image | Warehouse table `customer_features` |
+| Feast | `feast apply` / `materialize` via Jobs or scripts | Offline PG, online Redis |
+| Training pipeline | `python -m src.pipeline.run_pipeline` | Six steps, no KFP |
+| KFP on cluster | `kfp_pipeline.py` → YAML → `upload_pipeline.py` | GX validation on DS path; Spark + Feast platform steps |
+| Serving | `src.serving.app` | `/predict`, `/reload-model` |
 
 ---
 
-## Local Development (Docker Compose)
+## Troubleshooting hints
 
-### Teardown
+| Symptom | Check |
+|---------|--------|
+| `ImportError: cannot import name 'kubernetes' from 'kfp'` | Use Python **3.11** + install `requirements.txt`; set **`PYTHON3_EXEC`** for deploy scripts. |
+| Feast / Redis errors with `REDIS_PORT=tcp://…` | **`configs/settings.py`** parses Kubernetes-style ports; rebuild **`fkm-app`** image after pulling latest code. |
+| MLflow **`403` Invalid Host header** | Tracking server needs allowed hosts for in-cluster clients; manifest sets **`MLFLOW_SERVER_ALLOWED_HOSTS`** on **`mlflow-config`**. |
+| Wrong image pull namespace in KFP | Recompile with **`OPENSHIFT_APP_NAMESPACE`** matching your OpenShift project. |
 
-```bash
-docker compose down -v   # Stop containers and remove volumes
-```
+---
+
+## Licence / docs
+
+See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for component-level behaviour and design notes.

@@ -1,14 +1,18 @@
 """
-STAGE 1  –  End-to-end ETL orchestrator.
+STAGE 1  –  End-to-end ETL orchestrator (pandas / MinIO client → PostgreSQL).
 
-    MinIO (CSV)  →  Extract  →  Transform  →  Load  →  PostgreSQL
+Used by ``scripts/run_all.sh`` and local jobs. For OpenShift / KFP, the
+platform step runs ``spark_etl.py`` (PySpark + OpenLineage listener) instead;
+transform logic is intentionally parallel, not shared, between the two stacks.
 """
 
 import logging
 import sys
-import os
+from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from configs.settings import (
     MINIO_ACCESS_KEY,

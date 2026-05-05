@@ -1,16 +1,19 @@
 """
 STAGE 3  –  Orchestrate the full Kubeflow-style pipeline locally.
 
-This script can be invoked standalone to run all six steps in sequence
-on a local machine (no KFP cluster required).  The same component
-functions are also wired into the KFP DSL in `kfp_pipeline.py`.
+This script runs all six steps locally (no KFP). The same
+``src.pipeline.components`` functions are invoked from thin ``kfp_pipeline``
+``@dsl.component`` bodies on the cluster (plus GX validation in
+``gx_churn_validation`` for the KFP path only).
 """
 
 import logging
-import os
 import sys
+from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from configs.settings import (
     FEAST_REPO_PATH,

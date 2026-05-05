@@ -99,3 +99,24 @@ def rollback_to_version(
     """Promote a specific (older) version back to champion."""
     promote_to_alias(model_name, version, "champion", tracking_uri)
     logger.info("Rolled back to %s v%d (champion)", model_name, version)
+
+
+def transition_stage(
+    model_name: str,
+    version: int,
+    stage: str,
+    tracking_uri: str,
+) -> None:
+    """
+    Move a registered model version to a lifecycle stage (e.g. Production, Staging).
+
+    Uses MLflow's registry stages; complements alias-based promotion (:func:`promote_to_alias`).
+    """
+    mlflow.set_tracking_uri(tracking_uri)
+    client = MlflowClient()
+    client.transition_model_version_stage(
+        name=model_name,
+        version=str(version),
+        stage=stage,
+    )
+    logger.info("Model %s v%s → stage %r", model_name, version, stage)

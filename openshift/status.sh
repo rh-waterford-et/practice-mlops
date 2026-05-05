@@ -2,7 +2,7 @@
 # Quick status check for the lineage namespace
 set -euo pipefail
 
-NS="lineage"
+NS="${OPENSHIFT_APP_NAMESPACE:-lineage}"
 
 echo "══════ PODS ══════"
 oc get pods -n "$NS" -o wide

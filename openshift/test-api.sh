@@ -2,7 +2,7 @@
 # Smoke-test the inference API on OpenShift
 set -euo pipefail
 
-NS="lineage"
+NS="${OPENSHIFT_APP_NAMESPACE:-lineage}"
 HOST=$(oc get route inference-api -n "$NS" -o jsonpath='{.spec.host}')
 
 echo "Inference API host: $HOST"

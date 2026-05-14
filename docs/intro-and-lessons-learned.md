@@ -28,7 +28,7 @@ OpenLineage
 
 MLFlow Integration
 
-1. # Key Questions
+# Key Questions
 
 ## Is a dataset bound to a single namespace, or is it shared across namespaces?
 

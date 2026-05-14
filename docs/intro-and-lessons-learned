@@ -1,6 +1,6 @@
 ***This doc is currently WIP***
 
-1. # POC Overview
+# POC Overview
 
 The main goal of this project is to provide comprehensive capabilities for managing and tracking datasets within the platform. This will enable users to answer questions like:  "What specific data was this model trained on?" or "Which source documents did this RAG-generated answer come from?". 
 

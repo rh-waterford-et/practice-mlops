@@ -90,7 +90,7 @@ This has been the default approach thus far, characterised by creating OL integr
 
 ### Auto-Instrumentation
 
-Following similar approaches used in X like Opentelemetry, there is a possibility of attempting to allow lineage events we captured automatically. OTel ‘monkey patches’ well-known libraries for specific tasks (e.g. HTTP or SQL Clients), intercepting specific function calls and triggering logging events. We could follow a similar approach with OpenLineage subject to further investigation, with the obvious downside of a maintenance overhead in maintaining version compatibility with these libraries.
+Following similar approaches used in projects like Opentelemetry, there is a possibility of capturing lineage events automatically. OTel ‘monkey patches’ well-known libraries for specific tasks (e.g. HTTP or SQL Clients), intercepting specific function calls and triggering logging events. We could follow a similar approach with OpenLineage subject to further investigation, with the obvious downside of a maintenance overhead in maintaining version compatibility with these libraries.
 
 ### SDK
 
